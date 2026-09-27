@@ -77,6 +77,7 @@ type Request struct {
 	Model                  string           `json:"model"`
 	MaxAttempts            *int             `json:"max_attempts"`
 	SessionID              *string          `json:"session_id"`
+	Resume                 bool             `json:"resume"`
 	ThinkingLevel          string           `json:"thinking_level"`
 	IncludePartialMessages *bool            `json:"include_partial_messages"`
 	ExtraAllowedTools      []string         `json:"extra_allowed_tools"`
@@ -313,7 +314,7 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
 	}
-	sessionID, restored, err := openSession(ctx, store, parsed.SessionID)
+	sessionID, restored, err := openSession(ctx, store, parsed.SessionID, parsed.Resume)
 	if err != nil {
 		return err
 	}
@@ -646,6 +647,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 	if parsed.SessionID != nil && strings.TrimSpace(*parsed.SessionID) == "" {
 		return nil, errors.New("session_id must not be empty")
 	}
+	if parsed.Resume && parsed.SessionID == nil {
+		return nil, errors.New("resume requires session_id")
+	}
 	if parsed.ThinkingLevel != "" && !llm.ReasoningEffort(parsed.ThinkingLevel).Valid() {
 		return nil, invalidThinkingLevelError("thinking_level", parsed.ThinkingLevel)
 	}
@@ -726,10 +730,15 @@ func explainRejectedThinkingLevel(err error, effort llm.ReasoningEffort) error {
 	)
 }
 
+// openSession resumes the requested session, or creates it when it does not
+// exist yet. With mustExist a missing session is an error instead: a caller
+// that means to continue a conversation would otherwise get an empty session
+// under the old id and no sign that the history is gone.
 func openSession(
 	ctx context.Context,
 	store *localfile.Store,
 	requested *string,
+	mustExist bool,
 ) (session.ID, sessionstore.ResumeState, error) {
 	id := session.ID(uuid.New().String())
 	if requested != nil {
@@ -739,7 +748,7 @@ func openSession(
 	if err == nil {
 		return id, restored, nil
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
+	if !errors.Is(err, fs.ErrNotExist) || mustExist {
 		return "", sessionstore.ResumeState{}, fmt.Errorf("open session %q: %w", id, err)
 	}
 	snapshot, err := store.Create(ctx, id)

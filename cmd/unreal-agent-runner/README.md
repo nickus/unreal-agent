@@ -29,7 +29,10 @@ unreal-agent-runner -workspace ./my-project -p 'Summarize this project.' > run.j
 ```
 
 Sessions: `${XDG_STATE_HOME:-$HOME/.local/state}/unreal-agent/sessions`
-(override with `-session-directory`).
+(override with `-session-directory`). A request's `session_id` creates the
+session or continues it; add `"resume": true` when the caller means to continue
+one, so that a session whose files are gone fails with an `open session` error
+instead of silently starting over under the same id.
 
 You can also pass a JSON request as an argument or through stdin:
 

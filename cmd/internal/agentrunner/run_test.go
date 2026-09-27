@@ -400,6 +400,68 @@ func TestValidateRequestRejectsNonUUIDMessageID(t *testing.T) {
 	}
 }
 
+func TestValidateRequestRejectsResumeWithoutSessionID(t *testing.T) {
+	prompt := "hello"
+	if _, err := validateRequest(Request{Prompt: &prompt, Resume: true}); err == nil || err.Error() != "resume requires session_id" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunMainResumesOnlyExistingSessions(t *testing.T) {
+	var mu sync.Mutex
+	var inputs [][]string // user message texts the model saw, per call
+	client := &fakeClient{respond: func(_ context.Context, request llm.Request) (llm.Response, error) {
+		var texts []string
+		for _, item := range request.Input {
+			if message, ok := item.Data.(llm.Message); ok && message.Role == llm.RoleUser {
+				texts = append(texts, message.Text)
+			}
+		}
+		mu.Lock()
+		inputs = append(inputs, texts)
+		mu.Unlock()
+		return llm.Response{Output: []llm.Item{{
+			Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "ok"},
+		}}}, nil
+	}}
+	sessions := t.TempDir()
+	id := uuid.New().String()
+	run := func(request string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := RunMain(t.Context(), []string{"-workspace", t.TempDir(), "-session-directory", sessions},
+			func(name string) string {
+				if name == llmAPIKeyEnvironment {
+					return "secret"
+				}
+				return ""
+			}, func() []string { return nil }, strings.NewReader(request), &stdout, &stderr, testConfig(client))
+		return code, stdout.String()
+	}
+
+	// A missing session is an error with resume, and nothing is created.
+	code, stdout := run(`{"prompt":"first","session_id":"` + id + `","resume":true}`)
+	if code != 1 || !strings.Contains(stdout, `open session \"`+id+`\":`) {
+		t.Fatalf("exit = %d, stdout = %q; want an open session error", code, stdout)
+	}
+	if files, _ := filepath.Glob(filepath.Join(sessions, "*.session.jsonl")); len(files) != 0 {
+		t.Fatalf("session files = %v, want none", files)
+	}
+	if len(inputs) != 0 {
+		t.Fatalf("model calls = %d, want none", len(inputs))
+	}
+
+	// Without resume the session is created; resume then continues it.
+	if code, stdout := run(`{"prompt":"first","session_id":"` + id + `"}`); code != 0 {
+		t.Fatalf("create: exit = %d, stdout = %q", code, stdout)
+	}
+	if code, stdout := run(`{"prompt":"second","session_id":"` + id + `","resume":true}`); code != 0 {
+		t.Fatalf("resume: exit = %d, stdout = %q", code, stdout)
+	}
+	if len(inputs) != 2 || !slices.Equal(inputs[1], []string{"first", "second"}) {
+		t.Fatalf("model inputs = %#v, want the resumed call to see both prompts", inputs)
+	}
+}
+
 func TestLoadDotEnvUsesScopedOverrides(t *testing.T) {
 	t.Setenv("HARNESS_RUNNER_EXISTING", "outer")
 	t.Setenv("SANDBOX_EGRESS_PROXY", "outer-proxy")

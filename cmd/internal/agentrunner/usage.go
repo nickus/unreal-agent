@@ -25,6 +25,9 @@ Request schema (JSON object; unknown fields are rejected):
     UNREAL_HARNESS_LLM_THINKING_LEVEL, then "high".
   session_id: non-empty string (optional)
     Creates or resumes a persisted session.
+  resume: boolean (optional)
+    Requires session_id to name an existing session: a missing one fails with an
+    "open session" error instead of starting an empty session under that id.
   disallowed_tools: array of non-empty strings (optional)
     Static tool names excluded from model context and execution.
   extra_allowed_tools: array of non-empty strings (optional; accepted but ignored)
