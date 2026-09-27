@@ -1,6 +1,13 @@
 package agentrunner
 
 import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/fireworks"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/ollama"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openai"
@@ -8,13 +15,26 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openrouter"
 )
 
+// llmExtraBodyEnvironment holds a JSON object of extra top-level fields for
+// every Responses API request, like the OpenAI SDKs' extra_body: sampling or
+// template parameters that a compatible server accepts beyond the standard set.
+const llmExtraBodyEnvironment = "UNREAL_HARNESS_LLM_EXTRA_BODY"
+
+// harnessRequestFields are the request fields the harness sets itself. Extra
+// fields cannot replace them; the request builder also refuses at send time.
+var harnessRequestFields = []string{"include", "input", "model", "prompt_cache_key", "reasoning", "store", "stream", "tools"}
+
 func DefaultProviders() []Provider {
 	return []Provider{
 		{
 			Name:    "ollama",
 			BaseURL: ollama.BaseURL,
-			NewClient: func(_, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
-				return ollama.NewClient(ollama.Config{BaseURL: baseURL, MaxAttempts: &maxAttempts})
+			NewClient: func(_, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				extraBody, err := requestExtraBody(getenv)
+				if err != nil {
+					return nil, err
+				}
+				return ollama.NewClient(ollama.Config{BaseURL: baseURL, MaxAttempts: &maxAttempts, Extensions: extraBody})
 			},
 		},
 		{
@@ -22,8 +42,12 @@ func DefaultProviders() []Provider {
 			BaseURL:           "https://api.openai.com/v1",
 			DefaultModel:      "gpt-6-astra",
 			APIKeyEnvironment: "OPENAI_API_KEY",
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
-				return openai.NewClient(openai.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts})
+			NewClient: func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				extraBody, err := requestExtraBody(getenv)
+				if err != nil {
+					return nil, err
+				}
+				return openai.NewClient(openai.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, Extensions: extraBody})
 			},
 		},
 		{
@@ -34,7 +58,11 @@ func DefaultProviders() []Provider {
 				if err != nil {
 					return nil, err
 				}
-				config.BaseURL, config.MaxAttempts = baseURL, &maxAttempts
+				extraBody, err := requestExtraBody(getenv)
+				if err != nil {
+					return nil, err
+				}
+				config.BaseURL, config.MaxAttempts, config.Extensions = baseURL, &maxAttempts, extraBody
 				return openaicodex.NewClient(config)
 			},
 		},
@@ -43,17 +71,47 @@ func DefaultProviders() []Provider {
 			Name:              "openrouter",
 			BaseURL:           "https://openrouter.ai/api/v1",
 			APIKeyEnvironment: "OPENROUTER_API_KEY",
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
-				return openrouter.NewClient(openrouter.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts})
+			NewClient: func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				extraBody, err := requestExtraBody(getenv)
+				if err != nil {
+					return nil, err
+				}
+				return openrouter.NewClient(openrouter.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, Extensions: extraBody})
 			},
 		},
 		{
 			Name:              "fireworks",
 			BaseURL:           "https://api.fireworks.ai/inference/v1",
 			APIKeyEnvironment: "FIREWORKS_API_KEY",
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
-				return fireworks.NewClient(fireworks.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts})
+			NewClient: func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				extraBody, err := requestExtraBody(getenv)
+				if err != nil {
+					return nil, err
+				}
+				return fireworks.NewClient(fireworks.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, Extensions: extraBody})
 			},
 		},
 	}
+}
+
+// requestExtraBody parses UNREAL_HARNESS_LLM_EXTRA_BODY. Unset or blank means
+// no extra fields.
+func requestExtraBody(getenv func(string) string) (map[string]jsontext.Value, error) {
+	encoded := strings.TrimSpace(getenv(llmExtraBodyEnvironment))
+	if encoded == "" {
+		return nil, nil
+	}
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON object of request fields: %w", llmExtraBodyEnvironment, err)
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("%s must be a JSON object of request fields, not null", llmExtraBodyEnvironment)
+	}
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		if slices.Contains(harnessRequestFields, name) {
+			return nil, fmt.Errorf("%s field %q is set by the harness and cannot be overridden", llmExtraBodyEnvironment, name)
+		}
+	}
+	return fields, nil
 }

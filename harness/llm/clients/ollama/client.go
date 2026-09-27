@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"encoding/json/jsontext"
 	"strings"
 
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -13,6 +14,9 @@ const BaseURL = "http://localhost:11434/v1"
 type Config struct {
 	BaseURL     string
 	MaxAttempts *int
+	// Extensions are extra top-level request fields, such as sampling or
+	// template parameters a Responses API server accepts beyond the standard set.
+	Extensions map[string]jsontext.Value
 }
 
 type Client struct {
@@ -30,6 +34,7 @@ func NewClient(config Config) (*Client, error) {
 		Endpoint:    baseURL + "/responses",
 		Headers:     map[string][]string{"Content-Type": {"application/json"}},
 		MaxAttempts: config.MaxAttempts,
+		Extensions:  config.Extensions,
 	})
 	if err != nil {
 		_ = remote.Close()

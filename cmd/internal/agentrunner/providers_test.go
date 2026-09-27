@@ -2,6 +2,7 @@ package agentrunner
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"io"
 	"net/http"
@@ -107,5 +108,99 @@ func TestRunnerCodexUsesSubscriptionWithoutAPIKey(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "subscription-token") {
 		t.Fatal("credential leaked into session output")
+	}
+}
+
+func TestRequestExtraBody(t *testing.T) {
+	parse := func(value string) (map[string]jsontext.Value, error) {
+		return requestExtraBody(func(name string) string {
+			if name == llmExtraBodyEnvironment {
+				return value
+			}
+			return ""
+		})
+	}
+	if fields, err := parse(" "); err != nil || fields != nil {
+		t.Fatalf("blank: fields = %v, error = %v", fields, err)
+	}
+	fields, err := parse(`{"top_k":20,"max_output_tokens":4096,"chat_template_kwargs":{"enable_thinking":true}}`)
+	if err != nil || len(fields) != 3 || string(fields["top_k"]) != "20" || string(fields["chat_template_kwargs"]) != `{"enable_thinking":true}` {
+		t.Fatalf("fields = %v, error = %v", fields, err)
+	}
+	for _, value := range []string{`[1]`, `null`, `"top_k"`, `{"top_k":}`, `{"a":1,"a":2}`} {
+		if _, err := parse(value); err == nil || !strings.Contains(err.Error(), llmExtraBodyEnvironment+" must be a JSON object") {
+			t.Errorf("%s: error = %v", value, err)
+		}
+	}
+	for _, field := range harnessRequestFields {
+		if _, err := parse(`{"` + field + `":true}`); err == nil || !strings.Contains(err.Error(), `field "`+field+`" is set by the harness`) {
+			t.Errorf("%s: error = %v", field, err)
+		}
+	}
+}
+
+func TestRunnerProvidersSendExtraBody(t *testing.T) {
+	for _, provider := range DefaultProviders() {
+		for _, extraBody := range []string{
+			`{"top_k":20,"chat_template_kwargs":{"enable_thinking":false}}`,
+			`{"top_k":20,"chat_template_kwargs":{"enable_thinking":false},"cache_control":{"type":"ephemeral"}}`,
+		} {
+			t.Run(provider.Name+"/"+extraBody, func(t *testing.T) {
+				t.Parallel()
+				bodies := make(chan map[string]jsontext.Value, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					var body map[string]jsontext.Value
+					if err := json.UnmarshalRead(request.Body, &body); err != nil {
+						t.Error(err)
+					}
+					bodies <- body
+					writer.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n")
+				}))
+				defer server.Close()
+				var stderr strings.Builder
+				code := RunMain(t.Context(),
+					[]string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()},
+					func(name string) string {
+						return map[string]string{
+							"UNREAL_HARNESS_LLM_PROVIDER": provider.Name,
+							"UNREAL_HARNESS_LLM_BASE_URL": server.URL,
+							"UNREAL_HARNESS_LLM_API_KEY":  "test-key",
+							"OPENAI_CODEX_ACCESS_TOKEN":   "subscription-token",
+							"OPENAI_CODEX_ACCOUNT_ID":     "account-1",
+							llmExtraBodyEnvironment:       extraBody,
+						}[name]
+					}, func() []string { return nil },
+					strings.NewReader(`{"prompt":"hello","model":"test","max_attempts":1}`),
+					io.Discard, &stderr, Config{Name: "unreal-agent-runner", ParseRequest: parseTestRequest, Providers: DefaultProviders()})
+				if code != 0 {
+					t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+				}
+				body := <-bodies
+				if string(body["top_k"]) != "20" || string(body["chat_template_kwargs"]) != `{"enable_thinking":false}` || string(body["model"]) != `"test"` {
+					t.Fatalf("body = %v", body)
+				}
+				cacheControl := string(body["cache_control"])
+				switch {
+				case strings.Contains(extraBody, "cache_control") && cacheControl != `{"type":"ephemeral"}`:
+					t.Fatalf("cache_control = %s, want the configured value", cacheControl)
+				case !strings.Contains(extraBody, "cache_control") && provider.Name == "openrouter" && cacheControl != `{"type":"ephemeral","ttl":"1h"}`:
+					t.Fatalf("cache_control = %s, want the OpenRouter default", cacheControl)
+				case !strings.Contains(extraBody, "cache_control") && provider.Name != "openrouter" && cacheControl != "":
+					t.Fatalf("cache_control = %s, want none", cacheControl)
+				}
+			})
+		}
+	}
+}
+
+func TestRunnerRejectsInvalidExtraBody(t *testing.T) {
+	var stderr strings.Builder
+	code := RunMain(t.Context(), []string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()}, func(name string) string {
+		return map[string]string{"UNREAL_HARNESS_LLM_API_KEY": "test-key", llmExtraBodyEnvironment: `{"model":"other"}`}[name]
+	}, func() []string { return nil }, strings.NewReader(`{"prompt":"hello"}`), io.Discard, &stderr,
+		Config{Name: "unreal-agent-runner", ParseRequest: parseTestRequest, Providers: DefaultProviders()})
+	if code != 1 || !strings.Contains(stderr.String(), llmExtraBodyEnvironment+` field "model" is set by the harness`) {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
 	}
 }

@@ -2,6 +2,7 @@ package fireworks
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -17,6 +18,9 @@ type Config struct {
 	BaseURL     string
 	MaxAttempts *int
 	Trace       func(Exchange)
+	// Extensions are extra top-level request fields, such as sampling or
+	// template parameters a Responses API server accepts beyond the standard set.
+	Extensions map[string]jsontext.Value
 }
 
 type Exchange = responsesapi.Exchange
@@ -47,6 +51,7 @@ func NewClient(config Config) (*Client, error) {
 		Trace:             config.Trace,
 		MaxAttempts:       config.MaxAttempts,
 		CacheKeyPlacement: responsesapi.CacheKeyPlacement{Header: "x-session-affinity"},
+		Extensions:        config.Extensions,
 	})
 	if err != nil {
 		_ = remote.Close()

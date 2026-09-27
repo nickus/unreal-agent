@@ -48,6 +48,17 @@ provider-specific level (for example `minimal` or `none`) is sent to the
 provider as is, so a server that supports only some levels can be given one it
 accepts.
 
+To send fields beyond the standard request, such as sampling or chat-template
+parameters that an OpenAI-compatible server accepts, set
+`UNREAL_HARNESS_LLM_EXTRA_BODY` to a JSON object; its fields are added to every
+Responses API request. Fields the harness sets itself (`model`, `input`,
+`tools`, `reasoning`, `stream`, `store`, `include`, `prompt_cache_key`) cannot
+be replaced:
+
+```sh
+export UNREAL_HARNESS_LLM_EXTRA_BODY='{"temperature":0.6,"top_p":0.95}'
+```
+
 The runner loads the workspace's `.env` file into its environment before it
 reads these settings, without overriding variables that are already set. When
 the workspace content is not trusted, pass `-no-workspace-dotenv` or set

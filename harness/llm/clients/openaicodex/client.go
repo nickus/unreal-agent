@@ -2,6 +2,7 @@ package openaicodex
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"net"
@@ -24,6 +25,9 @@ type Config struct {
 	BaseURL     string
 	MaxAttempts *int
 	Trace       func(responsesapi.Exchange)
+	// Extensions are extra top-level request fields, such as sampling or
+	// template parameters a Responses API server accepts beyond the standard set.
+	Extensions map[string]jsontext.Value
 }
 
 type Client struct {
@@ -62,6 +66,7 @@ func NewClient(config Config) (*Client, error) {
 		CacheKeyPlacement: responsesapi.CacheKeyPlacement{UsePromptCacheKeyField: true, Header: "session-id"},
 		MaxAttempts:       config.MaxAttempts,
 		Trace:             config.Trace,
+		Extensions:        config.Extensions,
 	})
 	if err != nil {
 		_ = remote.Close()
