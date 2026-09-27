@@ -22,6 +22,10 @@ const llmExtraBodyEnvironment = "UNREAL_HARNESS_LLM_EXTRA_BODY"
 
 // harnessRequestFields are the request fields the harness sets itself. Extra
 // fields cannot replace them; the request builder also refuses at send time.
+// max_output_tokens is left out on purpose: the builder sends it only for a
+// model with MaxOutputTokens, which the runner never sets, so an extra field
+// is how an output cap is configured. TestRunnerProvidersSendExtraBody fails
+// if the runner starts setting it; reserve the field here when it does.
 var harnessRequestFields = []string{"include", "input", "model", "prompt_cache_key", "reasoning", "store", "stream", "tools"}
 
 func DefaultProviders() []Provider {

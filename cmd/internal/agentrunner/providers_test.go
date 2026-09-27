@@ -142,8 +142,8 @@ func TestRequestExtraBody(t *testing.T) {
 func TestRunnerProvidersSendExtraBody(t *testing.T) {
 	for _, provider := range DefaultProviders() {
 		for _, extraBody := range []string{
-			`{"top_k":20,"chat_template_kwargs":{"enable_thinking":false}}`,
-			`{"top_k":20,"chat_template_kwargs":{"enable_thinking":false},"cache_control":{"type":"ephemeral"}}`,
+			`{"top_k":20,"max_output_tokens":64,"chat_template_kwargs":{"enable_thinking":false}}`,
+			`{"top_k":20,"max_output_tokens":64,"chat_template_kwargs":{"enable_thinking":false},"cache_control":{"type":"ephemeral"}}`,
 		} {
 			t.Run(provider.Name+"/"+extraBody, func(t *testing.T) {
 				t.Parallel()
@@ -179,6 +179,11 @@ func TestRunnerProvidersSendExtraBody(t *testing.T) {
 				body := <-bodies
 				if string(body["top_k"]) != "20" || string(body["chat_template_kwargs"]) != `{"enable_thinking":false}` || string(body["model"]) != `"test"` {
 					t.Fatalf("body = %v", body)
+				}
+				// The output cap is the operator's: the runner must not set it
+				// itself (see harnessRequestFields).
+				if string(body["max_output_tokens"]) != "64" {
+					t.Fatalf("max_output_tokens = %s, want the configured 64", body["max_output_tokens"])
 				}
 				cacheControl := string(body["cache_control"])
 				switch {
