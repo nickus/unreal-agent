@@ -45,6 +45,9 @@ const (
 	// its provider accepts without changing every request.
 	llmThinkingLevelEnvironment = "UNREAL_HARNESS_LLM_THINKING_LEVEL"
 	defaultThinkingLevel        = llm.ReasoningEffortHigh
+	// Same switch as -no-workspace-dotenv, for deployments that set the
+	// environment but not the arguments (container images, supervisors).
+	noWorkspaceDotEnvEnvironment = "UNREAL_HARNESS_NO_WORKSPACE_DOTENV"
 )
 
 const defaultSystemPrompt = `You are an AI agent running inside an isolated sandbox container.
@@ -177,6 +180,7 @@ func Run(
 	workspaceDirectory := flags.String("workspace", ".", "agent workspace and Bash working directory")
 	logDirectory := flags.String("log-directory", "", "optional session JSONL log directory; unset writes only to stdout")
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
+	noWorkspaceDotEnv := flags.Bool("no-workspace-dotenv", false, "do not load the workspace .env file into the environment (or set "+noWorkspaceDotEnvEnvironment+"=1)")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -229,9 +233,17 @@ func Run(
 	if !workspaceInfo.IsDir() {
 		return fmt.Errorf("workspace %q is not a directory", workspace)
 	}
-	environment, err := loadDotEnv(filepath.Join(workspace, ".env"))
+	skipDotEnv, err := workspaceDotEnvDisabled(*noWorkspaceDotEnv, getenv)
 	if err != nil {
 		return err
+	}
+	// Skipping behaves exactly as if the workspace had no .env file.
+	environment := &environmentScope{}
+	if !skipDotEnv {
+		environment, err = loadDotEnv(filepath.Join(workspace, ".env"))
+		if err != nil {
+			return err
+		}
 	}
 	defer func() {
 		if err := environment.Close(); err != nil {
@@ -538,6 +550,23 @@ func openDatetimeLog(directory string, now time.Time) (*os.File, error) {
 		return nil, fmt.Errorf("open session log: %w", err)
 	}
 	return file, nil
+}
+
+// workspaceDotEnvDisabled reads the opt-out before any .env is loaded, so a
+// workspace cannot turn the switch back off for itself.
+func workspaceDotEnvDisabled(flagValue bool, getenv func(string) string) (bool, error) {
+	if flagValue {
+		return true, nil
+	}
+	value := strings.TrimSpace(getenv(noWorkspaceDotEnvEnvironment))
+	if value == "" {
+		return false, nil
+	}
+	disabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %q is not a boolean", noWorkspaceDotEnvEnvironment, value)
+	}
+	return disabled, nil
 }
 
 func loadDotEnv(path string) (*environmentScope, error) {

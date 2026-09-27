@@ -48,6 +48,12 @@ provider-specific level (for example `minimal` or `none`) is sent to the
 provider as is, so a server that supports only some levels can be given one it
 accepts.
 
+The runner loads the workspace's `.env` file into its environment before it
+reads these settings, without overriding variables that are already set. When
+the workspace content is not trusted, pass `-no-workspace-dotenv` or set
+`UNREAL_HARNESS_NO_WORKSPACE_DOTENV=1`; a file that could otherwise point
+`UNREAL_HARNESS_LLM_BASE_URL` or a proxy variable elsewhere is then ignored.
+
 Run `unreal-agent-runner -h` for options and the JSON request fields.
 
 ## Docker
