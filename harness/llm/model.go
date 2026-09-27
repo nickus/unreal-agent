@@ -82,6 +82,9 @@ type Model struct {
 	ReasoningEffort ReasoningEffort
 }
 
+// ReasoningEffort is the reasoning level sent to the provider. The named
+// constants are the standard levels; providers also define their own (such as
+// "minimal" or "none"), which pass through verbatim.
 type ReasoningEffort string
 
 const (
@@ -92,13 +95,40 @@ const (
 	ReasoningEffortMax    ReasoningEffort = "max"
 )
 
-func (effort ReasoningEffort) Valid() bool {
+// maxReasoningEffortLength bounds provider-specific levels; real ones are short words.
+const maxReasoningEffortLength = 64
+
+// Standard reports whether effort is one of the named levels.
+func (effort ReasoningEffort) Standard() bool {
 	switch effort {
 	case ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh, ReasoningEffortMax:
 		return true
 	default:
 		return false
 	}
+}
+
+// Valid reports whether effort can be sent to a provider: a standard level, or
+// a provider-specific level made of ASCII letters, digits, '.', '_' and '-'.
+// Whether the provider accepts a given level is for the provider to decide.
+func (effort ReasoningEffort) Valid() bool {
+	if effort.Standard() {
+		return true
+	}
+	if effort == "" || len(effort) > maxReasoningEffortLength {
+		return false
+	}
+	for _, character := range effort {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= 'A' && character <= 'Z',
+			character >= '0' && character <= '9',
+			character == '.', character == '_', character == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type Request struct {

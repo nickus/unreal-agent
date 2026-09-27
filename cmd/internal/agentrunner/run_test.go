@@ -20,6 +20,7 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/llm/responsesapi"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 )
 
@@ -373,7 +374,7 @@ func TestRunMainEmitsValidationError(t *testing.T) {
 		t.Context(), nil,
 		func(string) string { return "secret" },
 		func() []string { return nil },
-		strings.NewReader(`{"messages":[],"thinking_level":"maximum"}`),
+		strings.NewReader(`{"messages":[],"thinking_level":"maximum effort"}`),
 		&stdout,
 		&stderr,
 		testConfig(&fakeClient{}),
@@ -384,7 +385,7 @@ func TestRunMainEmitsValidationError(t *testing.T) {
 	if got := eventTypes(t, stdout.String()); !slices.Equal(got, []string{"error"}) {
 		t.Fatalf("event types = %#v", got)
 	}
-	if !strings.Contains(stderr.String(), "thinking_level must be one of") {
+	if !strings.Contains(stderr.String(), `thinking_level "maximum effort" is invalid`) {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
@@ -553,24 +554,137 @@ func containsTool(tools []llm.Tool, name string) bool {
 	return false
 }
 
-func TestReasoningEffortMapsEveryThinkingLevel(t *testing.T) {
-	cases := map[string]llm.ReasoningEffort{
-		"low":    llm.ReasoningEffortLow,
-		"medium": llm.ReasoningEffortMedium,
-		"high":   llm.ReasoningEffortHigh,
-		"xhigh":  llm.ReasoningEffortXHigh,
-		"max":    llm.ReasoningEffortMax,
-		"":       llm.ReasoningEffortHigh,
+func TestResolveThinkingLevel(t *testing.T) {
+	for _, test := range []struct {
+		name, requested, environment string
+		want                         llm.ReasoningEffort
+	}{
+		{name: "default", want: llm.ReasoningEffortHigh},
+		{name: "request", requested: "low", environment: "medium", want: llm.ReasoningEffortLow},
+		{name: "environment", environment: "medium", want: llm.ReasoningEffortMedium},
+		{name: "trimmed environment", environment: " xhigh\n", want: llm.ReasoningEffortXHigh},
+		{name: "request max", requested: "max", want: llm.ReasoningEffortMax},
+		{name: "provider-specific request", requested: "minimal", environment: "low", want: "minimal"},
+		{name: "provider-specific environment", environment: "none", want: "none"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveThinkingLevel(test.requested, func(name string) string {
+				if name == llmThinkingLevelEnvironment {
+					return test.environment
+				}
+				return ""
+			})
+			if err != nil || got != test.want {
+				t.Fatalf("resolveThinkingLevel(%q, %q) = %q, %v, want %q", test.requested, test.environment, got, err, test.want)
+			}
+		})
 	}
-	for level, want := range cases {
-		if got := reasoningEffort(level); got != want {
-			t.Errorf("reasoningEffort(%q) = %q, want %q", level, got, want)
-		}
-	}
-	for _, level := range []string{"xhigh", "max"} {
+	for _, level := range []string{"xhigh", "max", "minimal"} {
 		if _, err := validateRequest(Request{Prompt: new(string), ThinkingLevel: level}); err != nil {
 			t.Errorf("validateRequest(thinking_level=%q) = %v, want nil", level, err)
 		}
+	}
+	if _, err := validateRequest(Request{Prompt: new(string), ThinkingLevel: "max effort"}); err == nil {
+		t.Error("validateRequest accepted an invalid thinking_level")
+	}
+	_, err := resolveThinkingLevel("", func(name string) string {
+		if name == llmThinkingLevelEnvironment {
+			return "very high"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), llmThinkingLevelEnvironment+` "very high" is invalid`) {
+		t.Fatalf("invalid environment level error = %v", err)
+	}
+}
+
+func TestRunMainUsesThinkingLevelFromEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		name, request string
+		want          llm.ReasoningEffort
+	}{
+		{name: "environment default", request: `{"prompt":"hello"}`, want: "medium"},
+		{name: "request wins", request: `{"prompt":"hello","thinking_level":"minimal"}`, want: "minimal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make(chan llm.Request, 1)
+			client := &fakeClient{respond: func(_ context.Context, request llm.Request) (llm.Response, error) {
+				requests <- request
+				return llm.Response{ID: "response-1", Stop: llm.StopComplete}, nil
+			}}
+			var stdout, stderr bytes.Buffer
+			code := RunMain(
+				t.Context(),
+				[]string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()},
+				func(name string) string {
+					return map[string]string{
+						"OPENAI_API_KEY":            "secret",
+						llmThinkingLevelEnvironment: "medium",
+					}[name]
+				},
+				func() []string { return nil },
+				strings.NewReader(test.request),
+				&stdout,
+				&stderr,
+				testConfig(client),
+			)
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			if request := <-requests; request.Model.ReasoningEffort != test.want {
+				t.Fatalf("reasoning effort = %q, want %q", request.Model.ReasoningEffort, test.want)
+			}
+			items := decodeLogItems(t, stdout.Bytes())
+			control, err := items[0].Data.(inbox.Input).DecodeControlMessage()
+			if err != nil || control.Parameters != (inbox.Settings{ReasoningEffort: test.want}) {
+				t.Fatalf("recorded settings = %#v, error = %v", control, err)
+			}
+		})
+	}
+}
+
+func TestRunMainExplainsRejectedThinkingLevel(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		apiError *responsesapi.APIError
+		explain  bool
+	}{
+		{name: "OpenAI parameter", apiError: &responsesapi.APIError{StatusCode: 400, Code: "unsupported_value", Param: "reasoning.effort", Message: "Unsupported value: 'max'."}, explain: true},
+		{name: "compatible server message", apiError: &responsesapi.APIError{StatusCode: 400, Message: `{"error":{"message":"Unexpected reasoning effort max."}}`}, explain: true},
+		{name: "unrelated bad request", apiError: &responsesapi.APIError{StatusCode: 400, Message: "model not found"}},
+		{name: "server error mentioning effort", apiError: &responsesapi.APIError{StatusCode: 500, Message: "effort estimator crashed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{respond: func(context.Context, llm.Request) (llm.Response, error) {
+				return llm.Response{}, fmt.Errorf("create response: %w", test.apiError)
+			}}
+			var stdout, stderr bytes.Buffer
+			code := RunMain(
+				t.Context(),
+				[]string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()},
+				func(name string) string {
+					if name == "OPENAI_API_KEY" {
+						return "secret"
+					}
+					return ""
+				},
+				func() []string { return nil },
+				strings.NewReader(`{"prompt":"hello","thinking_level":"max"}`),
+				&stdout,
+				&stderr,
+				testConfig(client),
+			)
+			if code != 1 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			hint := `the provider rejected thinking level "max"; set thinking_level in the request or ` + llmThinkingLevelEnvironment
+			if got := strings.Contains(stderr.String(), hint); got != test.explain {
+				t.Fatalf("stderr = %q, want hint = %t", stderr.String(), test.explain)
+			}
+			if !strings.Contains(stderr.String(), test.apiError.Message) {
+				t.Fatalf("stderr = %q, want the provider message", stderr.String())
+			}
+		})
 	}
 }
 

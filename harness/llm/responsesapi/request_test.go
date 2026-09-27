@@ -321,10 +321,30 @@ func TestRequestBodyEncodesReasoningEffort(t *testing.T) {
 
 func TestRequestBodyRejectsUnsupportedReasoningEffort(t *testing.T) {
 	_, err := requestBody(llm.Request{
-		Model: llm.Model{ID: "gpt-test", ReasoningEffort: "maximum"},
+		Model: llm.Model{ID: "gpt-test", ReasoningEffort: "maximum effort"},
 	}, "", nil)
-	if err == nil || err.Error() != `unsupported reasoning effort "maximum"` {
+	if err == nil || err.Error() != `unsupported reasoning effort "maximum effort"` {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRequestBodyPassesProviderReasoningEffortThrough(t *testing.T) {
+	body, err := requestBody(llm.Request{
+		Model: llm.Model{ID: "gpt-test", ReasoningEffort: "minimal"},
+	}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Reasoning.Effort != "minimal" {
+		t.Fatalf("reasoning = %#v", request.Reasoning)
 	}
 }
 

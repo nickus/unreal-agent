@@ -42,6 +42,12 @@ OpenAI is the default provider. Set `UNREAL_HARNESS_LLM_PROVIDER` to `openai`,
 `openai-codex`, `openrouter`, `fireworks`, or `ollama`, and
 `UNREAL_HARNESS_LLM_MODEL` to choose a model.
 
+Requests without `thinking_level` use `UNREAL_HARNESS_LLM_THINKING_LEVEL`, or
+`high` when it is unset. Besides `low`, `medium`, `high`, `xhigh` and `max`, a
+provider-specific level (for example `minimal` or `none`) is sent to the
+provider as is, so a server that supports only some levels can be given one it
+accepts.
+
 Run `unreal-agent-runner -h` for options and the JSON request fields.
 
 ## Docker

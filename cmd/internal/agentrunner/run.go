@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,6 +41,10 @@ const (
 	llmModelEnvironment       = "UNREAL_HARNESS_LLM_MODEL"
 	llmProviderEnvironment    = "UNREAL_HARNESS_LLM_PROVIDER"
 	llmMaxAttemptsEnvironment = "UNREAL_HARNESS_LLM_MAX_ATTEMPTS"
+	// Read when a request has no thinking_level, so a deployment can pick a level
+	// its provider accepts without changing every request.
+	llmThinkingLevelEnvironment = "UNREAL_HARNESS_LLM_THINKING_LEVEL"
+	defaultThinkingLevel        = llm.ReasoningEffortHigh
 )
 
 const defaultSystemPrompt = `You are an AI agent running inside an isolated sandbox container.
@@ -260,6 +265,10 @@ func Run(
 	if model == "" {
 		return fmt.Errorf("model must be set in the request or %s", llmModelEnvironment)
 	}
+	effort, err := resolveThinkingLevel(parsed.ThinkingLevel, getenv)
+	if err != nil {
+		return err
+	}
 	var apiKey string
 	if selected.APIKeyEnvironment != "" {
 		apiKey = getenv(llmAPIKeyEnvironment)
@@ -368,7 +377,7 @@ func Run(
 	settingsPayload, err := json.Marshal(inbox.ControlMessage{
 		Mode: inbox.UpdateSettings,
 		Parameters: inbox.Settings{
-			ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
+			ReasoningEffort: effort,
 		},
 	})
 	if err != nil {
@@ -410,7 +419,7 @@ func Run(
 	builder := contextbuilder.NewBuilder(registry.Skills()...)
 	builder.SetModel(llm.Model{
 		ID:              model,
-		ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
+		ReasoningEffort: effort,
 	})
 	systemPrompt := defaultSystemPrompt
 	if parsed.SystemPrompt != nil {
@@ -444,7 +453,7 @@ func Run(
 		return observerErr
 	}
 	if coordinatorErr != nil {
-		return fmt.Errorf("run coordinator: %w", coordinatorErr)
+		return fmt.Errorf("run coordinator: %w", explainRejectedThinkingLevel(coordinatorErr, effort))
 	}
 	return nil
 }
@@ -608,12 +617,8 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 	if parsed.SessionID != nil && strings.TrimSpace(*parsed.SessionID) == "" {
 		return nil, errors.New("session_id must not be empty")
 	}
-	if parsed.ThinkingLevel != "" {
-		switch parsed.ThinkingLevel {
-		case "low", "medium", "high", "xhigh", "max":
-		default:
-			return nil, errors.New("thinking_level must be one of: low, medium, high, xhigh, max")
-		}
+	if parsed.ThinkingLevel != "" && !llm.ReasoningEffort(parsed.ThinkingLevel).Valid() {
+		return nil, invalidThinkingLevelError("thinking_level", parsed.ThinkingLevel)
 	}
 	for _, name := range append(parsed.ExtraAllowedTools, parsed.DisallowedTools...) {
 		if strings.TrimSpace(name) == "" {
@@ -646,19 +651,50 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 	return parsed.Messages, nil
 }
 
-func reasoningEffort(level string) llm.ReasoningEffort {
-	switch level {
-	case "low":
-		return llm.ReasoningEffortLow
-	case "medium":
-		return llm.ReasoningEffortMedium
-	case "xhigh":
-		return llm.ReasoningEffortXHigh
-	case "max":
-		return llm.ReasoningEffortMax
-	default:
-		return llm.ReasoningEffortHigh
+// resolveThinkingLevel picks the request's thinking_level, then
+// UNREAL_HARNESS_LLM_THINKING_LEVEL, then "high". Levels outside the standard
+// set are provider-specific and are sent to the provider verbatim.
+func resolveThinkingLevel(requested string, getenv func(string) string) (llm.ReasoningEffort, error) {
+	if requested != "" {
+		if !llm.ReasoningEffort(requested).Valid() {
+			return "", invalidThinkingLevelError("thinking_level", requested)
+		}
+		return llm.ReasoningEffort(requested), nil
 	}
+	configured := strings.TrimSpace(getenv(llmThinkingLevelEnvironment))
+	if configured == "" {
+		return defaultThinkingLevel, nil
+	}
+	if !llm.ReasoningEffort(configured).Valid() {
+		return "", invalidThinkingLevelError(llmThinkingLevelEnvironment, configured)
+	}
+	return llm.ReasoningEffort(configured), nil
+}
+
+func invalidThinkingLevelError(source, level string) error {
+	return fmt.Errorf(
+		"%s %q is invalid: use low, medium, high, xhigh or max, or a provider-specific level of up to 64 letters, digits, '.', '_' or '-'",
+		source, level,
+	)
+}
+
+// explainRejectedThinkingLevel names the setting to change when the provider
+// rejects the reasoning effort: OpenAI reports param "reasoning.effort", while
+// other Responses API servers only return a 400 whose message names the effort.
+func explainRejectedThinkingLevel(err error, effort llm.ReasoningEffort) error {
+	var apiErr *responsesapi.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	rejected := apiErr.Param == "reasoning.effort" ||
+		(apiErr.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(apiErr.Message), "effort"))
+	if !rejected {
+		return err
+	}
+	return fmt.Errorf(
+		"%w (the provider rejected thinking level %q; set thinking_level in the request or %s to a level it supports)",
+		err, effort, llmThinkingLevelEnvironment,
+	)
 }
 
 func openSession(

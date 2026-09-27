@@ -27,7 +27,7 @@ func TestInboxControlMessages(t *testing.T) {
 }
 
 func TestInboxSettingsControls(t *testing.T) {
-	for _, effort := range []llm.ReasoningEffort{llm.ReasoningEffortLow, llm.ReasoningEffortMedium, llm.ReasoningEffortHigh, llm.ReasoningEffortXHigh, llm.ReasoningEffortMax} {
+	for _, effort := range []llm.ReasoningEffort{llm.ReasoningEffortLow, llm.ReasoningEffortMedium, llm.ReasoningEffortHigh, llm.ReasoningEffortXHigh, llm.ReasoningEffortMax, "minimal"} {
 		t.Run(string(effort), func(t *testing.T) {
 			want := inbox.ControlMessage{Mode: inbox.UpdateSettings, Parameters: inbox.Settings{ReasoningEffort: effort}}
 			payload, err := json.Marshal(want)
@@ -58,8 +58,8 @@ func TestInboxRejectsInvalidControlMessages(t *testing.T) {
 		`{"Mode":"settings","Parameters":"high"}`,
 		`{"Mode":"settings","Parameters":{"ReasoningEffort":""}}`,
 		`{"Mode":"settings","Parameters":{"ReasoningEffort":null}}`,
-		`{"Mode":"settings","Parameters":{"ReasoningEffort":"default"}}`,
-		`{"Mode":"settings","Parameters":{"ReasoningEffort":"turbo"}}`,
+		`{"Mode":"settings","Parameters":{"ReasoningEffort":"turbo mode"}}`,
+		`{"Mode":"settings","Parameters":{"ReasoningEffort":"high!"}}`,
 		`{"Mode":"settings","Parameters":{"ReasoningEffort":42}}`,
 		`{"Mode":"settings","Parameters":{"Model":"model"}}`,
 		`{"Mode":"settings","Parameters":{"Model":"model","ReasoningEffort":"high"}}`,
