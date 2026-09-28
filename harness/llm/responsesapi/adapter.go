@@ -113,7 +113,7 @@ func (adapter *adapter) Respond(ctx context.Context, request llm.Request, option
 	if err != nil {
 		return llm.Response{}, err
 	}
-	statusCode, responseBody, err := adapter.exchange(ctx, body, key)
+	statusCode, responseBody, err := adapter.exchange(ctx, body, key, options.OnDelta)
 	if err != nil {
 		return llm.Response{}, err
 	}

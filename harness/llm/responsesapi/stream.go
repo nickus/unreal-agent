@@ -14,17 +14,18 @@ import (
 	"slices"
 	"time"
 
+	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/primitives"
 )
 
-func (adapter *adapter) exchange(ctx context.Context, body []byte, cacheKey string) (int, []byte, error) {
+func (adapter *adapter) exchange(ctx context.Context, body []byte, cacheKey string, onDelta func(llm.Delta)) (int, []byte, error) {
 	events := make(chan primitives.PrimitiveEvent)
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return 0, nil, err
 		}
 		request := adapter.remoteRequest(body, cacheKey)
-		result := adapter.exchangeAttempt(ctx, request, events)
+		result := adapter.exchangeAttempt(ctx, request, events, attemptDeltas(onDelta, attempt))
 		if !result.retry || attempt >= adapter.maxAttempts {
 			return result.status, result.body, result.err
 		}
@@ -59,10 +60,10 @@ type responseAttempt struct {
 	retry    bool
 }
 
-func (adapter *adapter) exchangeAttempt(ctx context.Context, request primitives.RemoteRequest, events chan primitives.PrimitiveEvent) responseAttempt {
+func (adapter *adapter) exchangeAttempt(ctx context.Context, request primitives.RemoteRequest, events chan primitives.PrimitiveEvent, onDelta func(llm.Delta)) responseAttempt {
 	adapter.remote.SendRequest(ctx, request, events)
 	var result responseAttempt
-	var state responseState
+	state := responseState{onDelta: onDelta}
 	var streaming bool
 	var parseErr error
 	for {
@@ -140,6 +141,33 @@ type responseState struct {
 	items    map[int]jsontext.Value
 	failure  *APIError
 	err      error
+	// onDelta receives streamed text as it arrives. It only observes the
+	// stream: the fields above never depend on the deltas.
+	onDelta func(llm.Delta)
+	// summaryParts holds the last reasoning summary part streamed per output
+	// item, to separate the parts as the assembled summary list does.
+	summaryParts map[int]int
+}
+
+// deltaChannels maps the Responses API text delta events to the kind of
+// text they carry. Other delta events (tool call arguments, audio) are not
+// streamed.
+var deltaChannels = map[string]llm.DeltaChannel{
+	"response.output_text.delta":            llm.DeltaText,
+	"response.refusal.delta":                llm.DeltaText,
+	"response.reasoning_text.delta":         llm.DeltaReasoning,
+	"response.reasoning_summary_text.delta": llm.DeltaReasoning,
+}
+
+// attemptDeltas tags the deltas of one request attempt with its number.
+func attemptDeltas(onDelta func(llm.Delta), attempt int) func(llm.Delta) {
+	if onDelta == nil {
+		return nil
+	}
+	return func(delta llm.Delta) {
+		delta.Attempt = attempt
+		onDelta(delta)
+	}
 }
 
 func (state *responseState) observe(data []byte) error {
@@ -151,10 +179,14 @@ func (state *responseState) observe(data []byte) error {
 		Response    jsontext.Value `json:"response"`
 		Item        jsontext.Value `json:"item"`
 		OutputIndex *int           `json:"output_index"`
-		Code        string         `json:"code"`
-		Message     string         `json:"message"`
-		Param       string         `json:"param"`
-		Error       *struct {
+		// Raw so that a provider's non-string delta (audio, custom events)
+		// cannot fail the decoding of an otherwise valid stream.
+		Delta        jsontext.Value `json:"delta"`
+		SummaryIndex *int           `json:"summary_index"`
+		Code         string         `json:"code"`
+		Message      string         `json:"message"`
+		Param        string         `json:"param"`
+		Error        *struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 			Param   string `json:"param"`
@@ -170,6 +202,9 @@ func (state *responseState) observe(data []byte) error {
 		if event.Type == "response.failed" {
 			state.failure = providerError(http.StatusOK, event.Response)
 		}
+	}
+	if channel, ok := deltaChannels[event.Type]; ok && state.onDelta != nil {
+		state.observeDelta(channel, event.OutputIndex, event.SummaryIndex, event.Delta)
 	}
 	if event.Type == "response.output_item.done" {
 		item := bytes.TrimSpace(event.Item)
@@ -205,6 +240,32 @@ func (state *responseState) observe(data []byte) error {
 		state.err = &APIError{StatusCode: http.StatusOK, Code: code, Message: message, Param: param, Type: kind}
 	}
 	return nil
+}
+
+// observeDelta forwards a streamed text fragment. A malformed delta is
+// skipped rather than reported: the terminal response carries the text.
+func (state *responseState) observeDelta(channel llm.DeltaChannel, outputIndex, summaryIndex *int, raw jsontext.Value) {
+	var text string
+	if len(raw) == 0 || json.Unmarshal(raw, &text) != nil || text == "" {
+		return
+	}
+	index := 0
+	if outputIndex != nil {
+		index = *outputIndex
+	}
+	if summaryIndex != nil {
+		// A reasoning summary arrives as separate parts; start each new one
+		// on its own paragraph.
+		last, seen := state.summaryParts[index]
+		if seen && last != *summaryIndex {
+			text = "\n\n" + text
+		}
+		if state.summaryParts == nil {
+			state.summaryParts = make(map[int]int)
+		}
+		state.summaryParts[index] = *summaryIndex
+	}
+	state.onDelta(llm.Delta{OutputIndex: index, Channel: channel, Text: text})
 }
 
 func (state *responseState) unwrap() ([]byte, error) {

@@ -371,10 +371,18 @@ func (current *coordinator) requestModelResponse(
 	requestContext, cancel := context.WithCancel(ctx)
 	current.cancelModel = cancel
 	current.state.callModel = false
+	options := llm.RequestOptions{CacheKey: string(current.dependencies.SessionID)}
+	if onDelta := current.dependencies.OnModelDelta; onDelta != nil {
+		options.OnDelta = func(delta llm.Delta) {
+			// An interrupted request can still be draining its stream while
+			// the next turn generates; its text is no longer wanted.
+			if requestContext.Err() == nil {
+				onDelta(turn.ID, delta)
+			}
+		}
+	}
 	go func() {
-		response, err := current.dependencies.LLM.Respond(requestContext, built.Request, llm.RequestOptions{
-			CacheKey: string(current.dependencies.SessionID),
-		})
+		response, err := current.dependencies.LLM.Respond(requestContext, built.Request, options)
 		select {
 		case results <- modelResponseResult{
 			turnID:   turn.ID,

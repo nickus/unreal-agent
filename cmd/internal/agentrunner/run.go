@@ -109,9 +109,16 @@ type sessionObserver struct {
 	sessionID session.ID
 	output    io.Writer
 	cancel    context.CancelFunc
+	// deltas receives model_delta events; nil disables them.
+	deltas        io.Writer
+	deltaInterval time.Duration
 
-	mu  sync.Mutex
-	err error
+	mu              sync.Mutex
+	err             error
+	pendingDelta    *modelDeltaEvent
+	deltaTimer      *time.Timer
+	deltaGeneration uint64
+	deltasClosed    bool
 }
 
 func RunMain(
@@ -182,6 +189,7 @@ func Run(
 	logDirectory := flags.String("log-directory", "", "optional session JSONL log directory; unset writes only to stdout")
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
 	noWorkspaceDotEnv := flags.Bool("no-workspace-dotenv", false, "do not load the workspace .env file into the environment (or set "+noWorkspaceDotEnvEnvironment+"=1)")
+	modelDeltaInterval := flags.Duration("model-delta-interval", defaultModelDeltaInterval, "how long streamed model output is buffered before it is written as a model_delta event (0 writes each delta)")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -199,6 +207,9 @@ func Run(
 	}
 	if *toolHeartbeatInterval < 0 {
 		return errors.New("tool heartbeat interval must not be negative")
+	}
+	if *modelDeltaInterval < 0 {
+		return errors.New("model delta interval must not be negative")
 	}
 
 	if prompt != nil {
@@ -444,9 +455,16 @@ func Run(
 	}
 
 	observer := &sessionObserver{
-		sessionID: sessionID,
-		output:    observedOutput,
-		cancel:    cancel,
+		sessionID:     sessionID,
+		output:        observedOutput,
+		cancel:        cancel,
+		deltaInterval: *modelDeltaInterval,
+	}
+	var onModelDelta func(session.TurnID, llm.Delta)
+	if parsed.IncludePartialMessages == nil || *parsed.IncludePartialMessages {
+		// Deltas go to stdout only: the session log keeps the complete items.
+		observer.deltas = output
+		onModelDelta = observer.ModelDelta
 	}
 	observerID := store.AddObserver(observer.Observe)
 	defer store.RemoveObserver(observerID)
@@ -460,8 +478,10 @@ func Run(
 		LLM:                   client,
 		Tools:                 registry,
 		Operations:            operations,
+		OnModelDelta:          onModelDelta,
 	})
 	coordinatorErr := current.Run(runContext)
+	observer.CloseDeltas()
 	if observerErr := observer.Err(); observerErr != nil {
 		return observerErr
 	}
@@ -764,7 +784,9 @@ func (observer *sessionObserver) Observe(sessionID session.ID, item sessionstore
 	}
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
-	if observer.err != nil {
+	// Buffered deltas precede the item, so a model_response always follows
+	// the preview of its own text.
+	if !observer.flushDeltaLocked() {
 		return
 	}
 	if err := writeSessionItem(observer.output, item); err != nil {

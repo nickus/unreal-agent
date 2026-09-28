@@ -24,6 +24,11 @@ type Dependencies struct {
 	LLM                   llm.Adapter
 	Tools                 tool.Registry
 	Operations            operation.Manager
+	// OnModelDelta, when set, receives the model's output as it streams, tagged
+	// with the turn being generated. It is a live preview only: the turn's
+	// model_response item stays the complete, authoritative output. It is
+	// called from the model request goroutine and must not block.
+	OnModelDelta func(session.TurnID, llm.Delta)
 }
 
 type Coordinator interface {

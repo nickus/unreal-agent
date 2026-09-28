@@ -500,11 +500,18 @@ func TestLoadDotEnvUsesScopedOverrides(t *testing.T) {
 type fakeClient struct {
 	mu      sync.Mutex
 	respond func(context.Context, llm.Request) (llm.Response, error)
-	calls   int
-	closed  bool
+	// stream is sent to the request's delta callback before each response.
+	stream []llm.Delta
+	calls  int
+	closed bool
 }
 
-func (client *fakeClient) Respond(ctx context.Context, request llm.Request, _ llm.RequestOptions) (llm.Response, error) {
+func (client *fakeClient) Respond(ctx context.Context, request llm.Request, options llm.RequestOptions) (llm.Response, error) {
+	if options.OnDelta != nil {
+		for _, delta := range client.stream {
+			options.OnDelta(delta)
+		}
+	}
 	return client.respond(ctx, request)
 }
 

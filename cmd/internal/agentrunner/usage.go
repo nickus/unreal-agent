@@ -31,7 +31,13 @@ Request schema (JSON object; unknown fields are rejected):
   disallowed_tools: array of non-empty strings (optional)
     Static tool names excluded from model context and execution.
   extra_allowed_tools: array of non-empty strings (optional; accepted but ignored)
-  include_partial_messages: boolean (optional; accepted but ignored)
+  include_partial_messages: boolean (optional; default true)
+    Writes the model's output to stdout while it generates, as
+    {"type":"model_delta","turn_id","attempt","output_index","channel","text"}
+    events; channel is "text" or "reasoning". Deltas are a preview: they are not
+    stored in the session, and the turn's model_response item has the complete
+    output. A delta with a higher attempt restarts the turn's output after a
+    retried request. Set false to write only session items.
 `
 
 func writeUsage(flags *flag.FlagSet) error {

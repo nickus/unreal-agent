@@ -62,6 +62,20 @@ be replaced:
 export UNREAL_HARNESS_LLM_EXTRA_BODY='{"temperature":0.6,"top_p":0.95}'
 ```
 
+While the model generates, the runner also writes its output as it streams, so
+a caller can show a turn before it completes:
+
+```json
+{"type":"model_delta","turn_id":"…","attempt":1,"output_index":1,"channel":"text","text":"Hello"}
+```
+
+`channel` is `text` or `reasoning`. Consecutive deltas are merged into one
+event every 250 ms (`-model-delta-interval`; `0` writes each one). They are a
+preview only: they are not stored in the session or the `-log-directory` log,
+and the turn's `model_response` item still carries the complete output. A
+higher `attempt` means the request was retried and the turn's output starts
+over. Send `"include_partial_messages": false` to write session items only.
+
 The runner loads the workspace's `.env` file into its environment before it
 reads these settings, without overriding variables that are already set. When
 the workspace content is not trusted, pass `-no-workspace-dotenv` or set
