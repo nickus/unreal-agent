@@ -218,8 +218,10 @@ func requestItem(source llm.Item) (openaiapi.Item, error) {
 					Type: openaiapi.InputTextContentParamTypeInputText,
 				}
 			case llm.ToolResultImage:
-				// The Responses API schema marks detail as required on input_image
-				// parts, and strict implementations reject parts that omit it.
+				// The published schema lets tool output images omit detail (it
+				// defaults to "auto") but requires it on input_image message content,
+				// and some servers validate tool output images against that stricter
+				// shape. Sending the default explicitly satisfies both.
 				detail := openaiapi.DetailEnumAuto
 				content = openaiapi.InputImageContentParamAutoParam{
 					Detail:   &detail,

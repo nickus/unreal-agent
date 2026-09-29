@@ -10,7 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
+	"github.com/unreallabsai/unreal-agent/harness/tool/viewimage"
 )
 
 // inputImageParts returns every input_image content part found anywhere in a
@@ -33,8 +37,9 @@ func inputImageParts(value any) []map[string]any {
 	return parts
 }
 
-// missingImageDetail mirrors servers that validate input_image parts against the
-// published schema, where detail is a required field.
+// missingImageDetail mirrors servers that validate every input_image part,
+// including those in tool output, against the message content schema, where
+// detail is a required field.
 func missingImageDetail(body []byte) (bool, error) {
 	var request any
 	if err := json.Unmarshal(body, &request); err != nil {
@@ -133,5 +138,58 @@ func TestAdapterSendsImagesThatStrictServersAccept(t *testing.T) {
 	}
 	if accepted.Load() != 1 || rejected.Load() != 1 {
 		t.Fatalf("accepted = %d, rejected = %d, want 1 and 1", accepted.Load(), rejected.Load())
+	}
+}
+
+// Session history stores tool call statuses and operation states, never request
+// bodies, so an image result recorded before detail was sent is encoded again on
+// resume and carries detail like a new one.
+func TestRequestBodySetsDetailOnReplayedImageResult(t *testing.T) {
+	const recordedStatus = `{"Sequence":4,"RecordedAt":"2026-01-02T03:04:05Z","Kind":"tool_call_status",` +
+		`"Data":{"TurnID":"turn-1","CallID":"call-1","Status":{"Error":"","WaitingFor":["image-1"]}}}`
+	const recordedOperation = `{"ID":"image-1","Type":"view_image","Version":1,"Status":"completed",` +
+		`"State":{"Path":"screen.png","Config":{"MaxSize":1000,"MaxHeight":20,"MaxWidth":30},` +
+		`"Result":{"Content":"aW1hZ2U=","OriginalWidth":16,"OriginalHeight":9,"OriginalMIMEType":"image/png",` +
+		`"EncodedMIMEType":"image/png","ScaleRatio":1,"Error":""}}}`
+	var restored sessionstore.Item
+	if err := json.Unmarshal([]byte(recordedStatus), &restored); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := restored.Data.(sessionstore.ToolCallStatus)
+	if !ok {
+		t.Fatalf("restored data = %T, want sessionstore.ToolCallStatus", restored.Data)
+	}
+	var stored operation.Operation
+	if err := json.Unmarshal([]byte(recordedOperation), &stored); err != nil {
+		t.Fatal(err)
+	}
+	result, err := viewimage.New(viewimage.Config{}).TranslateResult(status.CallID, status.Status, []operation.Operation{stored})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	builder := contextbuilder.NewBuilder()
+	call := llm.ToolCall{CallID: status.CallID, Name: "ViewImage", Arguments: `{"path":"screen.png"}`}
+	builder.AddModelResponse(llm.Response{Output: []llm.Item{{ProviderID: "fc-1", Type: llm.ItemToolCall, Data: call}}})
+	builder.AddToolResult(result.CallID, result.Output, false)
+	builder.Commit()
+	built, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := requestBody(built.Request, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request any
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	parts := inputImageParts(request)
+	if len(parts) != 1 {
+		t.Fatalf("found %d input_image parts, want 1: %s", len(parts), body)
+	}
+	if parts[0]["image_url"] != "data:image/png;base64,aW1hZ2U=" || parts[0]["detail"] != "auto" {
+		t.Fatalf("replayed image part = %v, want the stored image with detail \"auto\"", parts[0])
 	}
 }
