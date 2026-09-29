@@ -123,8 +123,8 @@ func TestRequestBodyEncodesToolResultOutputs(t *testing.T) {
 		{name: "text", output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done"}}, want: `[{"type":"input_text","text":"done"}]`},
 		{name: "empty text", output: []llm.ToolResultOutput{{Kind: llm.ToolResultText}}, want: `[{"type":"input_text","text":""}]`},
 		{name: "no outputs", want: `[]`},
-		{name: "image URL", output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "https://example.com/image.png"}}, want: `[{"type":"input_image","image_url":"https://example.com/image.png"}]`},
-		{name: "image data URL", output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="}}, want: `[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]`},
+		{name: "image URL", output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "https://example.com/image.png"}}, want: `[{"type":"input_image","detail":"auto","image_url":"https://example.com/image.png"}]`},
+		{name: "image data URL", output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="}}, want: `[{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,aGVsbG8="}]`},
 		{
 			name: "mixed content in order",
 			output: []llm.ToolResultOutput{
@@ -133,7 +133,7 @@ func TestRequestBodyEncodesToolResultOutputs(t *testing.T) {
 				{Kind: llm.ToolResultText, Value: "Resized dimensions: 2000x1500"},
 				{Kind: llm.ToolResultImage, Value: "https://example.com/second.png"},
 			},
-			want: `[{"type":"input_text","text":"Original dimensions: 4000x3000"},{"type":"input_image","image_url":"data:image/png;base64,Zmlyc3Q="},{"type":"input_text","text":"Resized dimensions: 2000x1500"},{"type":"input_image","image_url":"https://example.com/second.png"}]`,
+			want: `[{"type":"input_text","text":"Original dimensions: 4000x3000"},{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,Zmlyc3Q="},{"type":"input_text","text":"Resized dimensions: 2000x1500"},{"type":"input_image","detail":"auto","image_url":"https://example.com/second.png"}]`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

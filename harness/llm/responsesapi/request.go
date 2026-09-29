@@ -218,7 +218,11 @@ func requestItem(source llm.Item) (openaiapi.Item, error) {
 					Type: openaiapi.InputTextContentParamTypeInputText,
 				}
 			case llm.ToolResultImage:
+				// The Responses API schema marks detail as required on input_image
+				// parts, and strict implementations reject parts that omit it.
+				detail := openaiapi.DetailEnumAuto
 				content = openaiapi.InputImageContentParamAutoParam{
+					Detail:   &detail,
 					ImageUrl: &part.Value,
 					Type:     openaiapi.InputImageContentParamAutoParamTypeInputImage,
 				}
