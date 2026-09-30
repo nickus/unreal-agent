@@ -197,7 +197,42 @@ func TestBuilderAppendsValidationErrorToolResult(t *testing.T) {
 	}
 }
 
-func TestBuilderRemovesOnlyStagedRunningResultsForUpdatedCall(t *testing.T) {
+func TestBuilderKeepsToolResultsInCallOrder(t *testing.T) {
+	current := NewBuilder()
+	for _, callID := range []string{"A", "B", "C"} {
+		current.AddToolResult(callID, nil, true)
+	}
+	done := func(callID string) llm.Item {
+		return llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{
+			CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done " + callID}},
+		}}
+	}
+	finish := func(callID string) {
+		current.AddToolResult(callID, done(callID).Data.(llm.ToolResult).Output, false)
+	}
+	assertInput := func(want ...llm.Item) {
+		t.Helper()
+		result, err := current.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(result.Request.Input, withPreamble(want...)) {
+			t.Fatalf("input = %#v, want %#v", result.Request.Input, withPreamble(want...))
+		}
+	}
+
+	// The calls finish out of order: C, then A, while B keeps running.
+	finish("C")
+	finish("A")
+	running := llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{
+		CallID: "B", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}},
+	}}
+	assertInput(done("A"), running, done("C"))
+	finish("B")
+	assertInput(done("A"), done("B"), done("C"))
+}
+
+func TestBuilderReplacesOnlyStagedRunningResultOfUpdatedCall(t *testing.T) {
 	for _, running := range []bool{false, true} {
 		name := "completed"
 		output := "done A"
@@ -227,10 +262,10 @@ func TestBuilderRemovesOnlyStagedRunningResultsForUpdatedCall(t *testing.T) {
 			}
 			want := withPreamble(
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}}},
+				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: output}}}},
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "B", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}}},
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "C", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done C"}}}},
 				llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "continue"}},
-				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: output}}}},
 			)
 			if !reflect.DeepEqual(result.Request.Input, want) {
 				t.Fatalf("input = %#v, want %#v", result.Request.Input, want)

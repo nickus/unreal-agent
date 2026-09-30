@@ -105,21 +105,37 @@ func (current *builder) AddToolResult(
 	payload []llm.ToolResultOutput,
 	running bool,
 ) {
-	runningOutput := []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}
 	if running {
-		payload = runningOutput
+		payload = []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}
 	}
-	current.stagedSuffix = slices.DeleteFunc(current.stagedSuffix, func(item llm.Item) bool {
-		if item.Type != llm.ItemToolResult {
-			return false
-		}
-		result := item.Data.(llm.ToolResult)
-		return result.CallID == callID && slices.Equal(result.Output, runningOutput)
-	})
-	current.stagedSuffix = append(current.stagedSuffix, llm.Item{
+	result := llm.Item{
 		Type: llm.ItemToolResult,
 		Data: llm.ToolResult{CallID: callID, Output: payload},
+	}
+	// A result takes the place of its call's staged placeholder, so results
+	// keep the order in which the model issued the calls instead of the order
+	// in which the calls finish. Many chat templates render tool results
+	// without their call IDs, which leaves position as the only link between
+	// a result and its call. At most one placeholder per call is staged,
+	// because a new one also replaces the previous one.
+	index := slices.IndexFunc(current.stagedSuffix, func(item llm.Item) bool {
+		return isRunningResult(item, callID)
 	})
+	if index >= 0 {
+		current.stagedSuffix[index] = result
+		return
+	}
+	current.stagedSuffix = append(current.stagedSuffix, result)
+}
+
+// isRunningResult reports whether item is the running placeholder of callID.
+func isRunningResult(item llm.Item, callID string) bool {
+	if item.Type != llm.ItemToolResult {
+		return false
+	}
+	result := item.Data.(llm.ToolResult)
+	return result.CallID == callID && len(result.Output) == 1 &&
+		result.Output[0] == llm.ToolResultOutput{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}
 }
 
 func (current *builder) Commit() {
