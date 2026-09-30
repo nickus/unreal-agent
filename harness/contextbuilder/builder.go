@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -20,12 +21,19 @@ var preambleFile string
 
 var preamble = strings.TrimSpace(preambleFile)
 
+// lateResultArgumentsLimit bounds the call arguments quoted in a late result's
+// label: enough to tell parallel calls apart without repeating a long command.
+const lateResultArgumentsLimit = 200
+
 type builder struct {
 	request         llm.Request
 	preamble        string
 	systemPrompt    string
 	committedPrefix []llm.Item
 	stagedSuffix    []llm.Item
+	// shownRunning holds the calls whose running placeholder has been
+	// committed and whose final result has not been added yet.
+	shownRunning map[string]struct{}
 }
 
 var _ Builder = (*builder)(nil)
@@ -35,7 +43,11 @@ func NewBuilder(skills ...tool.Skill) Builder {
 	if skillPrompt := formatSkillsForPrompt(skills); skillPrompt != "" {
 		currentPreamble += "\n\n" + skillPrompt
 	}
-	current := &builder{preamble: currentPreamble, committedPrefix: make([]llm.Item, 1)}
+	current := &builder{
+		preamble:        currentPreamble,
+		committedPrefix: make([]llm.Item, 1),
+		shownRunning:    make(map[string]struct{}),
+	}
 	current.SetSystemPrompt("")
 	return current
 }
@@ -107,6 +119,9 @@ func (current *builder) AddToolResult(
 ) {
 	if running {
 		payload = []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}
+	} else if _, shown := current.shownRunning[callID]; shown {
+		delete(current.shownRunning, callID)
+		payload = labelLateResult(current.findToolCall(callID), payload)
 	}
 	result := llm.Item{
 		Type: llm.ItemToolResult,
@@ -138,7 +153,71 @@ func isRunningResult(item llm.Item, callID string) bool {
 		result.Output[0] == llm.ToolResultOutput{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}
 }
 
+// findToolCall returns the committed call with the given ID, searching from
+// the most recent item because pending calls are usually recent. An unknown
+// call is returned with only its ID set.
+func (current *builder) findToolCall(callID string) llm.ToolCall {
+	for _, item := range slices.Backward(current.committedPrefix) {
+		if item.Type != llm.ItemToolCall {
+			continue
+		}
+		if call := item.Data.(llm.ToolCall); call.CallID == callID {
+			return call
+		}
+	}
+	return llm.ToolCall{CallID: callID}
+}
+
+// LateToolResultLabel is the line that starts the result of a call the model
+// has already seen as still running. Such a result arrives in a later turn,
+// often next to the calls and results of a newer response, where its position
+// no longer identifies its call, and many chat templates omit call IDs. A
+// call without a name is unknown, and only its ID is given.
+func LateToolResultLabel(call llm.ToolCall) string {
+	if call.Name == "" {
+		return fmt.Sprintf("Result of the earlier call with call ID %q, previously shown as still running:", call.CallID)
+	}
+	return fmt.Sprintf(
+		"Result of the earlier %s call %s (call ID %q), previously shown as still running:",
+		call.Name, truncateArguments(call.Arguments), call.CallID,
+	)
+}
+
+func labelLateResult(call llm.ToolCall, payload []llm.ToolResultOutput) []llm.ToolResultOutput {
+	label := LateToolResultLabel(call)
+	labeled := make([]llm.ToolResultOutput, 0, len(payload)+1)
+	if len(payload) != 0 && payload[0].Kind == llm.ToolResultText {
+		// Prefix the first text part rather than adding one: some servers
+		// join text parts without a separator.
+		labeled = append(labeled, llm.ToolResultOutput{
+			Kind:  llm.ToolResultText,
+			Value: label + "\n" + payload[0].Value,
+		})
+		return append(labeled, payload[1:]...)
+	}
+	labeled = append(labeled, llm.ToolResultOutput{Kind: llm.ToolResultText, Value: label})
+	return append(labeled, payload...)
+}
+
+func truncateArguments(arguments string) string {
+	if len(arguments) <= lateResultArgumentsLimit {
+		return arguments
+	}
+	cut := lateResultArgumentsLimit
+	for cut > 0 && !utf8.RuneStart(arguments[cut]) {
+		cut--
+	}
+	return arguments[:cut] + "…"
+}
+
 func (current *builder) Commit() {
+	for _, item := range current.stagedSuffix {
+		if item.Type == llm.ItemToolResult {
+			if callID := item.Data.(llm.ToolResult).CallID; isRunningResult(item, callID) {
+				current.shownRunning[callID] = struct{}{}
+			}
+		}
+	}
 	current.committedPrefix = append(current.committedPrefix, current.stagedSuffix...)
 	current.stagedSuffix = nil
 }

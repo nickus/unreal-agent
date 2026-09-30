@@ -504,7 +504,7 @@ func assertStopResult(t *testing.T, request llm.Request, callID, want string) {
 	for _, item := range request.Input {
 		if item.Type == llm.ItemToolResult {
 			result := item.Data.(llm.ToolResult)
-			if result.CallID == callID && result.Output[0].Value == want {
+			if result.CallID == callID && toolResultText(request, result) == want {
 				return
 			}
 		}

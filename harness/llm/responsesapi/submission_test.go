@@ -77,7 +77,9 @@ func TestSubmittedPrefixAndLateResultOrderOnWire(t *testing.T) {
 			if err := json.Unmarshal([]byte(test.want), &wantResponse); err != nil {
 				t.Fatal(err)
 			}
-			wantTail := append(wantResponse, map[string]any{"type": "function_call_output", "call_id": "A", "output": []any{map[string]any{"type": "input_text", "text": "done A"}}})
+			// A was committed as running, so its late result names the call.
+			lateA := contextbuilder.LateToolResultLabel(llm.ToolCall{CallID: "A", Name: "test", Arguments: `{}`}) + "\ndone A"
+			wantTail := append(wantResponse, map[string]any{"type": "function_call_output", "call_id": "A", "output": []any{map[string]any{"type": "input_text", "text": lateA}}})
 			tail := make([]map[string]any, len(next.Input)-len(sent.Input))
 			for i, item := range next.Input[len(sent.Input):] {
 				if err := json.Unmarshal(item, &tail[i]); err != nil {

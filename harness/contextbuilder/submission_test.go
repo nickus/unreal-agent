@@ -43,8 +43,9 @@ func TestBuilderPlacesResponseBeforeUnsubmittedInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			lateA := LateToolResultLabel(llm.ToolCall{CallID: "A", Name: "test", Arguments: `{}`}) + "\ndone A"
 			suffix := []llm.Item{
-				{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done A"}}}},
+				{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: lateA}}}},
 				{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "continue"}},
 				{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "heartbeat"}},
 				{Type: llm.ItemReasoning, Data: llm.Reasoning{Summary: []string{"added reasoning"}}},
