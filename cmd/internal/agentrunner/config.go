@@ -21,12 +21,21 @@ type ToolConfig struct {
 	Names       []string
 	SessionID   session.ID
 	Getenv      func(string) string
+	// MCPConfig is the path of an MCP server configuration file; empty
+	// configures no servers.
+	MCPConfig string
+	// OperationDirectory is the session's absolute directory for files that
+	// operations write.
+	OperationDirectory string
 }
 
 type Tools struct {
 	Registry   tool.Registry
 	RemoteJobs []operation.RemoteJobHandler
 	Close      func() error
+	// Warnings describe tools that could not be offered; the run goes on
+	// without them.
+	Warnings []error
 }
 
 type ToolFactory func(context.Context, ToolConfig) (Tools, error)

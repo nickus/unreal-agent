@@ -29,7 +29,8 @@ Request schema (JSON object; unknown fields are rejected):
     Requires session_id to name an existing session: a missing one fails with an
     "open session" error instead of starting an empty session under that id.
   disallowed_tools: array of non-empty strings (optional)
-    Static tool names excluded from model context and execution.
+    Tool names excluded from model context and execution: static tools, or
+    MCP tools by their model-facing name, mcp__<server>__<tool>.
   extra_allowed_tools: array of non-empty strings (optional; accepted but ignored)
   include_partial_messages: boolean (optional; default true)
     Writes the model's output to stdout while it generates, as
