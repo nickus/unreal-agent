@@ -122,8 +122,11 @@ a hash. The file uses the `mcpServers` layout that other MCP clients read:
   its head and tail, with the path.
 - A call that was in flight when the runner stopped is not sent again when
   the session resumes: it ends with an error saying its outcome is unknown.
-  Calls recorded in a session remain readable when a later run has no MCP
-  servers.
+  Calls recorded in a session remain readable when a later run has other MCP
+  servers or none; a new call to a tool that is no longer offered gets an
+  error result saying the tool is not available. A caller that wants the
+  model's tool history to match its tools starts a new session when the
+  servers change.
 - `disallowed_tools` accepts MCP tool names.
 
 Run `unreal-agent-runner -h` for options and the JSON request fields.

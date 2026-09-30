@@ -232,6 +232,89 @@ func TestRunnerCallsMCPToolsAndResumesWithoutThem(t *testing.T) {
 	}
 }
 
+// A session resumed with other MCP servers keeps its recorded results, is
+// offered only the tools configured now, and gets an error result, not a
+// failed run, when the model calls a tool that is gone.
+func TestRunnerResumesWithDifferentMCPServers(t *testing.T) {
+	dictionary, glossary := newDictionaryServer(t), newDictionaryServer(t)
+	getenv := func(name string) string { return map[string]string{"OPENAI_API_KEY": "secret"}[name] }
+	workspace, sessions := t.TempDir(), t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	run := func(server *dictionaryServer, name, request string, client *scriptedClient) {
+		t.Helper()
+		configPath := writeConfig(t, fmt.Sprintf(`{"mcpServers":{%q:{"type":"http","url":%q}}}`, name, server.URL))
+		var stdout, stderr bytes.Buffer
+		code := agentrunner.RunMain(ctx,
+			[]string{"-workspace", workspace, "-session-directory", sessions, "-mcp-config", configPath},
+			getenv, func() []string { return nil }, strings.NewReader(request), &stdout, &stderr, scriptedConfig(client))
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr = %s, stdout = %s", code, stderr.String(), stdout.String())
+		}
+	}
+	lookup := func(callID, name, word string) llm.Response {
+		return llm.Response{ID: "response-" + callID, Stop: llm.StopComplete, Output: []llm.Item{{
+			Type: llm.ItemToolCall,
+			Data: llm.ToolCall{CallID: callID, Name: name, Arguments: fmt.Sprintf(`{"word":%q}`, word)},
+		}}}
+	}
+
+	run(dictionary, "dictionary", `{"prompt":"define apple","session_id":"mcp-session"}`, &scriptedClient{
+		respond: func(call int, request llm.Request) (llm.Response, error) {
+			if call == 1 {
+				return lookup("call-1", "mcp__dictionary__lookup", "apple"), nil
+			}
+			if _, found := toolResult(request, "call-1"); !found {
+				return llm.Response{}, errors.New("no result for call-1")
+			}
+			return message("apple is a fruit"), nil
+		},
+	})
+
+	resumed := &scriptedClient{respond: func(call int, request llm.Request) (llm.Response, error) {
+		if result, found := toolResult(request, "call-1"); !found || !strings.HasPrefix(result, "definition of apple") {
+			return llm.Response{}, errors.New("resumed context lost the MCP result")
+		}
+		var offered []string
+		for _, definition := range request.Tools {
+			if strings.HasPrefix(definition.Name, "mcp__") {
+				offered = append(offered, definition.Name)
+			}
+		}
+		if len(offered) != 1 || offered[0] != "mcp__glossary__lookup" {
+			return llm.Response{}, fmt.Errorf("MCP tools offered = %v", offered)
+		}
+		switch call {
+		case 1:
+			// The model still knows the tool from its history.
+			return lookup("call-2", "mcp__dictionary__lookup", "pear"), nil
+		case 2:
+			if result, _ := toolResult(request, "call-2"); result != `Error: tool "mcp__dictionary__lookup" is not available` {
+				return llm.Response{}, fmt.Errorf("call to the removed tool: result = %q", result)
+			}
+			return lookup("call-3", "mcp__glossary__lookup", "pear"), nil
+		default:
+			if result, found := toolResult(request, "call-3"); !found || !strings.HasPrefix(result, "definition of pear") {
+				return llm.Response{}, fmt.Errorf("call to the new tool: result = %q (found %v)", result, found)
+			}
+			return message("pear is a fruit too"), nil
+		}
+	}}
+	run(glossary, "glossary", `{"prompt":"and pear?","session_id":"mcp-session","resume":true}`, resumed)
+	if resumed.calls != 3 {
+		t.Fatalf("model calls after resume = %d, want 3", resumed.calls)
+	}
+	dictionary.mu.Lock()
+	dictionaryCalls := dictionary.calls
+	dictionary.mu.Unlock()
+	glossary.mu.Lock()
+	glossaryCalls := glossary.calls
+	glossary.mu.Unlock()
+	if fmt.Sprint(dictionaryCalls) != "[lookup(apple)]" || fmt.Sprint(glossaryCalls) != "[lookup(pear)]" {
+		t.Fatalf("dictionary calls = %v, glossary calls = %v", dictionaryCalls, glossaryCalls)
+	}
+}
+
 func TestRunnerRejectsInvalidMCPConfiguration(t *testing.T) {
 	for _, test := range []struct{ config, want string }{
 		{`{"mcpServers":{"local":{"type":"stdio","command":"server"}}}`, "invalid JSON"},
