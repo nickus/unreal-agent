@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 	"uuid"
@@ -50,12 +51,15 @@ type loopState struct {
 	callModel         bool
 	grace             <-chan time.Time
 	graceToolCalls    map[toolCallKey]struct{}
+	// toolCallCount numbers tool calls in the order the model issued them.
+	toolCallCount uint64
 }
 
 type toolCallState struct {
 	toolCall   llm.ToolCall
 	status     *tool.CallStatus
 	operations map[operation.ID]struct{}
+	order      uint64
 }
 
 type toolCallKey struct {
@@ -654,12 +658,14 @@ func (current *coordinator) addToolCallsToLocalState(response sessionstore.Model
 			continue
 		}
 		call := output.Data.(llm.ToolCall)
+		current.state.toolCallCount++
 		current.state.toolCalls[toolCallKey{
 			turnID: response.TurnID,
 			callID: call.CallID,
 		}] = toolCallState{
 			toolCall:   call,
 			operations: make(map[operation.ID]struct{}),
+			order:      current.state.toolCallCount,
 		}
 	}
 }
@@ -772,8 +778,9 @@ func (current *coordinator) scheduleToolCalls(
 	ctx context.Context,
 ) ([]sessionstore.ToolCallStatus, error) {
 	statuses := make([]sessionstore.ToolCallStatus, 0)
-	for key, call := range current.state.toolCalls {
-		if call.status != nil {
+	for _, key := range current.toolCallsInOrder() {
+		call, exists := current.state.toolCalls[key]
+		if !exists || call.status != nil {
 			continue
 		}
 		status, err := current.scheduleToolCall(ctx, key, call.toolCall)
@@ -839,11 +846,11 @@ func (current *coordinator) reconcileToolCalls(
 	ctx context.Context,
 ) ([]sessionstore.ToolCallStatus, error) {
 	completed := make([]sessionstore.ToolCallStatus, 0)
-	for key := range current.state.toolCalls {
-		if !current.toolCallOperationsAreTerminal(key.turnID, key.callID) {
+	for _, key := range current.toolCallsInOrder() {
+		call, exists := current.state.toolCalls[key]
+		if !exists || !current.toolCallOperationsAreTerminal(key.turnID, key.callID) {
 			continue
 		}
-		call := current.state.toolCalls[key]
 		if call.status == nil {
 			return nil, fmt.Errorf("reconcile untranslated tool call %q in turn %q", key.callID, key.turnID)
 		}
@@ -872,6 +879,17 @@ func (current *coordinator) reconcileToolCalls(
 		}
 	}
 	return completed, nil
+}
+
+// toolCallsInOrder lists the pending calls in the order the model issued them.
+// Results reach the context in the order calls are scheduled and reconciled,
+// so iterating the map directly would shuffle them.
+func (current *coordinator) toolCallsInOrder() []toolCallKey {
+	keys := slices.Collect(maps.Keys(current.state.toolCalls))
+	slices.SortFunc(keys, func(a, b toolCallKey) int {
+		return cmp.Compare(current.state.toolCalls[a].order, current.state.toolCalls[b].order)
+	})
+	return keys
 }
 
 func toolCallStatusesRequireModelResponse(statuses []sessionstore.ToolCallStatus) bool {
