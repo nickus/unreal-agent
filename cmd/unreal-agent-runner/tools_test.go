@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/unreallabsai/unreal-agent/cmd/internal/agentrunner"
+	"github.com/unreallabsai/unreal-agent/harness/mcpclient"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
@@ -35,8 +36,16 @@ func TestParseRequestConfiguresStaticTools(t *testing.T) {
 			t.Errorf("unavailable tool %s resolves", name)
 		}
 	}
-	if len(configured.RemoteJobs) != 0 {
-		t.Fatal("slim runner configured remote jobs")
+	// Only the MCP call handler, present without servers so that a resumed
+	// session can settle calls recorded in an earlier run.
+	if len(configured.RemoteJobs) != 1 || configured.RemoteJobs[0].RemoteJobPlanType() != mcpclient.PlanType {
+		t.Fatalf("remote jobs = %#v", configured.RemoteJobs)
+	}
+	if len(configured.Warnings) != 0 {
+		t.Fatalf("warnings = %v", configured.Warnings)
+	}
+	if err := configured.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -82,6 +82,53 @@ the workspace content is not trusted, pass `-no-workspace-dotenv` or set
 `UNREAL_HARNESS_NO_WORKSPACE_DOTENV=1`; a file that could otherwise point
 `UNREAL_HARNESS_LLM_BASE_URL` or a proxy variable elsewhere is then ignored.
 
+## MCP servers
+
+`-mcp-config FILE` offers the tools of MCP servers that speak the streamable
+HTTP transport. Each server tool becomes a function tool of its own, named
+`mcp__<server>__<tool>`: characters other than ASCII letters, digits, `_` and
+`-` become `_`, and a name longer than 64 characters is shortened and ends in
+a hash. The file uses the `mcpServers` layout that other MCP clients read:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_MCP_TOKEN}" },
+      "timeout": 120000
+    }
+  }
+}
+```
+
+- `${NAME}` in `url` or in a header value is replaced with the environment
+  variable `NAME` when the runner starts, and an unset or empty variable is an
+  error. This keeps credentials out of the file and off the command line.
+- `timeout` is in milliseconds (default 300000, at most 3600000) and bounds
+  each tool call. Starting a server (initialize and tools/list) is bounded by
+  that timeout or one minute, whichever is shorter.
+- Only streamable HTTP servers are supported (`"type": "http"`, the default);
+  `stdio` and legacy `sse` servers are rejected.
+- The runner connects to all servers when it starts. A server that fails is
+  reported on stderr as `tool error> MCP server "name": ...` and left out; the
+  run continues with the other tools.
+- Tool calls run in the background like Bash commands. Text content is
+  returned as is, and structured content as JSON unless a text block already
+  carries it. Images, audio and binary resources are saved under the
+  session's operation directory, and the result names their paths. A result
+  longer than the output limit is saved there in full as well; the model sees
+  its head and tail, with the path.
+- A call that was in flight when the runner stopped is not sent again when
+  the session resumes: it ends with an error saying its outcome is unknown.
+  Calls recorded in a session remain readable when a later run has other MCP
+  servers or none; a new call to a tool that is no longer offered gets an
+  error result saying the tool is not available. A caller that wants the
+  model's tool history to match its tools starts a new session when the
+  servers change.
+- `disallowed_tools` accepts MCP tool names.
+
 Run `unreal-agent-runner -h` for options and the JSON request fields.
 
 ## Docker

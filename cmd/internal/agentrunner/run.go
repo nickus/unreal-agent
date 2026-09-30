@@ -190,6 +190,7 @@ func Run(
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
 	noWorkspaceDotEnv := flags.Bool("no-workspace-dotenv", false, "do not load the workspace .env file into the environment (or set "+noWorkspaceDotEnvEnvironment+"=1)")
 	modelDeltaInterval := flags.Duration("model-delta-interval", defaultModelDeltaInterval, "how long streamed model output is buffered before it is written as a model_delta event (0 writes each delta)")
+	mcpConfig := flags.String("mcp-config", "", "JSON `file` of streamable HTTP MCP servers whose tools the model can call, as {\"mcpServers\":{\"<name>\":{\"type\":\"http\",\"url\":\"...\",\"headers\":{...},\"timeout\":<milliseconds>}}}; ${NAME} in a URL or header value reads environment variable NAME")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -360,6 +361,7 @@ func Run(
 	}
 	toolConfig := ToolConfig{
 		SessionID: sessionID, Getenv: getenv, Names: names,
+		MCPConfig: strings.TrimSpace(*mcpConfig), OperationDirectory: operationDirectory,
 		Translators: tool.StaticTranslators{
 			Bash: bash.New(bash.Config{
 				Shell:         shell,
@@ -390,6 +392,11 @@ func Run(
 	for _, skillErr := range skillErrors {
 		if _, err := fmt.Fprintf(flagOutput, "skill error> %s\n", skillErr); err != nil {
 			return fmt.Errorf("write skill error: %w", err)
+		}
+	}
+	for _, warning := range configuredTools.Warnings {
+		if _, err := fmt.Fprintf(flagOutput, "tool error> %s\n", warning); err != nil {
+			return fmt.Errorf("write tool error: %w", err)
 		}
 	}
 
