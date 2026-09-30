@@ -876,6 +876,47 @@ func TestProcessExitTerminatesDescendantsWithoutWaitingForInheritedOutputPipes(t
 	descendantGone()
 }
 
+// The Bash tool tells the model that a command's background jobs end with its
+// shell, including jobs that nohup or disown detach from the shell itself.
+func TestProcessExitTerminatesDetachedBackgroundJobs(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		shell   string
+		command string
+	}{
+		{name: "nohup", shell: "/bin/sh", command: `nohup sleep 30 >/dev/null 2>&1 & echo "$!" > "$1"`},
+		{name: "disown", shell: "/bin/bash", command: `sleep 30 & echo "$!" > "$1"; disown`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := os.Stat(test.shell); err != nil {
+				t.Skipf("shell is unavailable: %v", err)
+			}
+			marker := filepath.Join(t.TempDir(), "pid")
+			process := startProcess(t.Context(), primitives.ProcessStartRequest{
+				Source:        "operation-1",
+				CorrelationID: "process-1",
+				Path:          test.shell,
+				Arguments:     []string{"-c", test.command, "sh", marker},
+			})
+			events := collectProcessEvents(t, process.Events())
+			if last := events[len(events)-1]; last.Type != primitives.PrimitiveEventProcessExited {
+				t.Fatalf("events = %#v", events)
+			}
+			data, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jobPID, ready := parseProcessPID(data)
+			if !ready {
+				t.Fatalf("job PID marker = %q", data)
+			}
+			jobGone := cleanupProcessPID(t, jobPID)
+			waitForProcessGone(t, jobPID)
+			jobGone()
+		})
+	}
+}
+
 func TestProcessDrainsBufferedOutputAfterExit(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "pid")
 	process := startProcessWithAllPipes(t.Context(), primitives.ProcessStartRequest{

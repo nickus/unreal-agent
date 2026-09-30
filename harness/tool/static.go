@@ -41,7 +41,7 @@ func staticDefinitions() []Definition {
 		{Tool: llm.Tool{
 			Type:        llm.ToolFunction,
 			Name:        BashName,
-			Description: "Execute a shell command in background. Independent commands may be issued as parallel tool calls in one turn. Command child processes are killed when the shell exits.",
+			Description: "Execute a shell command in background. Independent commands may be issued as parallel tool calls in one turn. Every call starts a new shell in the same working directory: variables, cd and other shell state do not carry over, so keep anything a later call needs in files. When the shell exits, the processes it started are terminated, including jobs put in the background with &, nohup or disown. To keep a long-running process such as a server, build or watcher going, run it in the foreground of its own call: calls run in the background, and its result arrives when it exits. Stop such a process when it is no longer needed; the session does not end while a call is running.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
