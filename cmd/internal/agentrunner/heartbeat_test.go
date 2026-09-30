@@ -55,7 +55,9 @@ func TestRunMainHeartbeatReleasesWaitingBashAndReplays(t *testing.T) {
 			if result.CallID != "waiting-call" || result.Output[0].Value == contextbuilder.ToolCallRunningPayload {
 				continue
 			}
-			if result.Output[0].Value != "released" {
+			// The model saw the call running in an earlier turn, so its
+			// result names the call.
+			if result.Output[0].Value != contextbuilder.LateToolResultLabel(waitingCall)+"\nreleased" {
 				return llm.Response{}, fmt.Errorf("unexpected Bash result: %s", result.Output[0].Value)
 			}
 			finished = true

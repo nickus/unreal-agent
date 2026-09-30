@@ -55,7 +55,7 @@ func TestCoordinatorReplaysToolResultBalance(t *testing.T) {
 			}
 			appended := 0
 			for _, item := range built.Request.Input {
-				if item.Type == llm.ItemToolResult && item.Data.(llm.ToolResult).Output[0].Value == string(operation.StatusCompleted) {
+				if item.Type == llm.ItemToolResult && toolResultText(built.Request, item.Data.(llm.ToolResult)) == string(operation.StatusCompleted) {
 					appended++
 				}
 			}

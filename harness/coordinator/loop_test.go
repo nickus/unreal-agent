@@ -435,10 +435,10 @@ func TestCoordinatorTracksToolCalls(t *testing.T) {
 
 	want := map[toolCallKey]toolCallState{
 		{turnID: "turn-1", callID: first.CallID}: {
-			toolCall: first, operations: map[operation.ID]struct{}{},
+			toolCall: first, operations: map[operation.ID]struct{}{}, order: 1,
 		},
 		{turnID: "turn-2", callID: second.CallID}: {
-			toolCall: second, operations: map[operation.ID]struct{}{},
+			toolCall: second, operations: map[operation.ID]struct{}{}, order: 2,
 		},
 	}
 	if !reflect.DeepEqual(current.state.toolCalls, want) {
@@ -457,7 +457,7 @@ func TestCoordinatorTracksToolCalls(t *testing.T) {
 	}
 	want = map[toolCallKey]toolCallState{
 		{turnID: "turn-2", callID: second.CallID}: {
-			toolCall: second, operations: map[operation.ID]struct{}{},
+			toolCall: second, operations: map[operation.ID]struct{}{}, order: 2,
 		},
 	}
 	if !reflect.DeepEqual(current.state.toolCalls, want) {
@@ -484,6 +484,7 @@ func TestCoordinatorTracksToolCalls(t *testing.T) {
 				waitingFor[0]: {},
 				waitingFor[1]: {},
 			},
+			order: 2,
 		},
 	}
 	if !reflect.DeepEqual(current.state.toolCalls, want) {

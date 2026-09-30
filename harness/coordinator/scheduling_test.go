@@ -340,7 +340,7 @@ func assertCompletedResults(t *testing.T, request llm.Request, count int) {
 	for _, item := range request.Input {
 		if item.Type == llm.ItemToolResult {
 			result := item.Data.(llm.ToolResult)
-			if result.Output[0].Value == string(operation.StatusCompleted) {
+			if toolResultText(request, result) == string(operation.StatusCompleted) {
 				completed[result.CallID]++
 			}
 		}

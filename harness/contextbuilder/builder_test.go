@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -197,10 +198,113 @@ func TestBuilderAppendsValidationErrorToolResult(t *testing.T) {
 	}
 }
 
-func TestBuilderRemovesOnlyStagedRunningResultsForUpdatedCall(t *testing.T) {
+func TestBuilderKeepsToolResultsInCallOrder(t *testing.T) {
+	current := NewBuilder()
+	for _, callID := range []string{"A", "B", "C"} {
+		current.AddToolResult(callID, nil, true)
+	}
+	done := func(callID string) llm.Item {
+		return llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{
+			CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done " + callID}},
+		}}
+	}
+	finish := func(callID string) {
+		current.AddToolResult(callID, done(callID).Data.(llm.ToolResult).Output, false)
+	}
+	assertInput := func(want ...llm.Item) {
+		t.Helper()
+		result, err := current.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(result.Request.Input, withPreamble(want...)) {
+			t.Fatalf("input = %#v, want %#v", result.Request.Input, withPreamble(want...))
+		}
+	}
+
+	// The calls finish out of order: C, then A, while B keeps running.
+	finish("C")
+	finish("A")
+	running := llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{
+		CallID: "B", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}},
+	}}
+	assertInput(done("A"), running, done("C"))
+	finish("B")
+	assertInput(done("A"), done("B"), done("C"))
+}
+
+func TestBuilderNamesCallOfResultShownRunning(t *testing.T) {
+	first := llm.ToolCall{CallID: "A", Name: "Bash", Arguments: `{"command":"make test"}`}
+	second := llm.ToolCall{CallID: "B", Name: "ViewImage", Arguments: `{"path":"shot.png"}`}
+	third := llm.ToolCall{CallID: "C", Name: "Bash", Arguments: `{"command":"ls"}`}
+	current := NewBuilder()
+	current.AddModelResponse(llm.Response{Output: []llm.Item{
+		{Type: llm.ItemToolCall, Data: first},
+		{Type: llm.ItemToolCall, Data: second},
+		{Type: llm.ItemToolCall, Data: third},
+	}})
+	for _, call := range []llm.ToolCall{first, second, third} {
+		current.AddToolResult(call.CallID, nil, true)
+	}
+	// C finishes before the model sees it; A and B are shown running.
+	current.AddToolResult("C", []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "listing"}}, false)
+	current.Commit()
+	current.AddToolResult("B", []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="}}, false)
+	current.AddToolResult("A", []llm.ToolResultOutput{
+		{Kind: llm.ToolResultText, Value: "ok"},
+		{Kind: llm.ToolResultText, Value: "Exit code: 0"},
+	}, false)
+
+	result, err := current.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	labelA := `Result of the earlier Bash call {"command":"make test"} (call ID "A"), previously shown as still running:`
+	if got := LateToolResultLabel(first); got != labelA {
+		t.Fatalf("label = %q, want %q", got, labelA)
+	}
+	running := []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}
+	want := withPreamble(
+		llm.Item{Type: llm.ItemToolCall, Data: first},
+		llm.Item{Type: llm.ItemToolCall, Data: second},
+		llm.Item{Type: llm.ItemToolCall, Data: third},
+		llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: running}},
+		llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "B", Output: running}},
+		llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "C", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "listing"}}}},
+		llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "B", Output: []llm.ToolResultOutput{
+			{Kind: llm.ToolResultText, Value: LateToolResultLabel(second)},
+			{Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="},
+		}}},
+		llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{
+			{Kind: llm.ToolResultText, Value: labelA + "\nok"},
+			{Kind: llm.ToolResultText, Value: "Exit code: 0"},
+		}}},
+	)
+	if !reflect.DeepEqual(result.Request.Input, want) {
+		t.Fatalf("input = %#v\nwant %#v", result.Request.Input, want)
+	}
+}
+
+func TestLateToolResultLabelShortensLongArguments(t *testing.T) {
+	// Three-byte runes put the byte limit inside a rune.
+	arguments := `{"command":"` + strings.Repeat("界", 100) + `"}`
+	label := LateToolResultLabel(llm.ToolCall{CallID: "A", Name: "Bash", Arguments: arguments})
+	quoted, _, found := strings.Cut(strings.TrimPrefix(label, "Result of the earlier Bash call "), " (call ID ")
+	if !found {
+		t.Fatalf("label = %q", label)
+	}
+	shortened, cut := strings.CutSuffix(quoted, "…")
+	if !cut || !strings.HasPrefix(arguments, shortened) || len(shortened) > lateResultArgumentsLimit ||
+		len(shortened) < lateResultArgumentsLimit-utf8.UTFMax || !utf8.ValidString(shortened) {
+		t.Fatalf("quoted arguments = %q, want a valid prefix of at most %d bytes and an ellipsis", quoted, lateResultArgumentsLimit)
+	}
+}
+
+func TestBuilderReplacesOnlyStagedRunningResultOfUpdatedCall(t *testing.T) {
 	for _, running := range []bool{false, true} {
 		name := "completed"
-		output := "done A"
+		// A was committed as running, so its result names the call.
+		output := LateToolResultLabel(llm.ToolCall{CallID: "A"}) + "\ndone A"
 		if running {
 			name = "still running"
 			output = ToolCallRunningPayload
@@ -227,10 +331,10 @@ func TestBuilderRemovesOnlyStagedRunningResultsForUpdatedCall(t *testing.T) {
 			}
 			want := withPreamble(
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}}},
+				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: output}}}},
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "B", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}}},
 				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "C", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done C"}}}},
 				llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "continue"}},
-				llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "A", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: output}}}},
 			)
 			if !reflect.DeepEqual(result.Request.Input, want) {
 				t.Fatalf("input = %#v, want %#v", result.Request.Input, want)

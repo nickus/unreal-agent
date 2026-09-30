@@ -140,7 +140,7 @@ func TestCoordinatorResumesPartiallyCompletedToolCall(t *testing.T) {
 		assertStopResult(t, run.calls[0].request, "call-0", "completed,completed")
 		completedResults := 0
 		for _, item := range run.calls[0].request.Input {
-			if item.Type == llm.ItemToolResult && item.Data.(llm.ToolResult).Output[0].Value == "completed,completed" {
+			if item.Type == llm.ItemToolResult && toolResultText(run.calls[0].request, item.Data.(llm.ToolResult)) == "completed,completed" {
 				completedResults++
 			}
 		}

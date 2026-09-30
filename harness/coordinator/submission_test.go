@@ -53,7 +53,7 @@ func TestCoordinatorSubmissionBoundarySurvivesRecovery(t *testing.T) {
 					t.Fatal("late inputs interrupted or replaced the request")
 				}
 				suffix := []llm.Item{
-					{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-0", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}},
+					lateToolResult(independentCall(0), string(operation.StatusCompleted)),
 					{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "user requested stop"}},
 				}
 				want := sent
@@ -134,7 +134,7 @@ func TestCoordinatorSteeringCommitsPendingSuffixBeforeNewResponse(t *testing.T) 
 		}
 		want := initial
 		want.Input = append(append([]llm.Item(nil), initial.Input...),
-			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-0", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}},
+			lateToolResult(independentCall(0), string(operation.StatusCompleted)),
 			llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "steering input"}},
 		)
 		if !reflect.DeepEqual(run.calls[1].request, want) {
@@ -144,7 +144,7 @@ func TestCoordinatorSteeringCommitsPendingSuffixBeforeNewResponse(t *testing.T) 
 		response := textResponse("Current response.")
 		run.respond(t, 1, response)
 		want.Input = append(want.Input, response.Output...)
-		want.Input = append(want.Input, llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-1", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}})
+		want.Input = append(want.Input, lateToolResult(independentCall(1), string(operation.StatusCompleted)))
 		if len(run.calls) != 3 || !reflect.DeepEqual(run.calls[2].request, want) {
 			t.Fatal("new response did not land at the replacement request boundary")
 		}
@@ -194,9 +194,7 @@ func TestCoordinatorRecoversPendingResultsAfterInputWriteFailure(t *testing.T) {
 				run.update(t, 1, operation.StatusCompleted)
 				want := run.calls[0].request
 				run.update(t, 0, operation.StatusCompleted)
-				want.Input = append(append([]llm.Item(nil), want.Input...), llm.Item{
-					Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-0", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}},
-				})
+				want.Input = append(append([]llm.Item(nil), want.Input...), lateToolResult(independentCall(0), string(operation.StatusCompleted)))
 				input := externalEvent(t, 0, "unpersisted", "unpersisted input")
 				switch kind {
 				case "heartbeat":
@@ -269,7 +267,7 @@ func TestCoordinatorStartsNewToolWhileDeliveringPreviousCompletion(t *testing.T)
 		want := first
 		want.Input = append(append([]llm.Item(nil), first.Input...), response.Output...)
 		want.Input = append(want.Input,
-			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-0", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}},
+			lateToolResult(independentCall(0), string(operation.StatusCompleted)),
 			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "C", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: contextbuilder.ToolCallRunningPayload}}}},
 		)
 		if len(run.calls) != 2 || !reflect.DeepEqual(run.calls[1].request, want) {
@@ -287,7 +285,7 @@ func TestCoordinatorStartsNewToolWhileDeliveringPreviousCompletion(t *testing.T)
 		secondResponse := textResponse("Waiting for C.")
 		run.respond(t, 1, secondResponse)
 		want.Input = append(want.Input, secondResponse.Output...)
-		want.Input = append(want.Input, llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "C", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}})
+		want.Input = append(want.Input, lateToolResult(llm.ToolCall{CallID: "C", Name: tool.BashName, Arguments: `{}`}, string(operation.StatusCompleted)))
 		if len(run.calls) != 3 || !reflect.DeepEqual(run.calls[2].request, want) || run.current.state.deliveredInputs != 2 {
 			t.Fatal("new completion was not delivered after its in-flight response")
 		}
@@ -332,9 +330,9 @@ func TestCoordinatorHardStopPreservesPendingInputsOnReplay(t *testing.T) {
 			t.Fatal("hard stop started another model request")
 		}
 		want.Input = append(append([]llm.Item(nil), want.Input...),
-			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-0", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCompleted)}}}},
+			lateToolResult(independentCall(0), string(operation.StatusCompleted)),
 			llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "follow up after stop"}},
-			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-1", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: string(operation.StatusCanceled)}}}},
+			lateToolResult(independentCall(1), string(operation.StatusCanceled)),
 		)
 		resumed := newStopTestRun(t, 0)
 		restoreTestRun(t, resumed, store)
