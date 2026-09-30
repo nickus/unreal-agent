@@ -156,6 +156,11 @@ func isRunningResult(item llm.Item, callID string) bool {
 // findToolCall returns the committed call with the given ID, searching from
 // the most recent item because pending calls are usually recent. An unknown
 // call is returned with only its ID set.
+//
+// The lookup assumes call IDs are unique across the conversation, as does the
+// rest of the builder (shownRunning, placeholder replacement): the request
+// pairs each tool result with its call by call ID alone, so a provider that
+// reused an ID in a later response would make the request itself ambiguous.
 func (current *builder) findToolCall(callID string) llm.ToolCall {
 	for _, item := range slices.Backward(current.committedPrefix) {
 		if item.Type != llm.ItemToolCall {
